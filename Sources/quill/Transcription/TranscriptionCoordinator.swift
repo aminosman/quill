@@ -80,15 +80,9 @@ actor TranscriptionCoordinator {
             publish(.transcribing(session: dir.lastPathComponent, queued: queue.count))
             do {
                 try await transcribe(dir)
+                if discardIfNegligible(dir) { continue }
                 Meeting.markUnread(dir)
-                var body = dir.lastPathComponent
-                if Config.autoFileEnabled() {
-                    let filed = Project.autoFile(dir, projectsRoot: Config.projectsDir())
-                    if !filed.isEmpty {
-                        body += " · filed to \(filed.joined(separator: ", "))"
-                    }
-                }
-                notifyUser(title: "quill — transcript ready", body: body)
+                notifyTranscriptReady(dir)
                 runHook(for: dir)
             } catch {
                 log(dir, "transcription failed: \(error)")
@@ -163,6 +157,74 @@ actor TranscriptionCoordinator {
         try await engine.prepare()
         self.engine = engine
         return engine
+    }
+
+    /// Three distinct notifications so the menu doesn't need opening to know
+    /// what happened: filed (which projects), ambiguous (mentioned but only
+    /// in passing — user should file it), or plain ready (no project came up).
+    private func notifyTranscriptReady(_ dir: URL) {
+        let name = dir.lastPathComponent
+        guard Config.autoFileEnabled() else {
+            notifyUser(title: "quill — transcript ready", body: name)
+            return
+        }
+        let result = Project.autoFile(dir, projectsRoot: Config.projectsDir())
+        if !result.filed.isEmpty {
+            notifyUser(
+                title: "quill — transcript filed",
+                body: "\(name) → \(result.filed.joined(separator: ", "))"
+            )
+        } else if !result.ambiguous.isEmpty {
+            notifyUser(
+                title: "quill — transcript needs filing",
+                body: "\(name) mentions \(result.ambiguous.joined(separator: ", ")) "
+                    + "only in passing — file it from the menu."
+            )
+        } else {
+            notifyUser(
+                title: "quill — transcript ready",
+                body: "\(name) — no project detected; file it from the menu."
+            )
+        }
+    }
+
+    /// A recording both shorter than max_seconds and emptier than max_words
+    /// is noise — an accidental trigger, a dropped call. Move it to the
+    /// Trash (recoverable) and skip the unread/auto-file/hook pipeline.
+    private func discardIfNegligible(_ dir: URL) -> Bool {
+        guard Config.autoDiscardEnabled() else { return false }
+        guard
+            let meta = try? Data(contentsOf: dir.appendingPathComponent("meta.json")),
+            let metaJson = try? JSONSerialization.jsonObject(with: meta) as? [String: Any],
+            let duration = metaJson["duration_seconds"] as? Int,
+            duration <= Config.autoDiscardMaxSeconds()
+        else { return false }
+        guard
+            let data = try? Data(contentsOf: dir.appendingPathComponent("transcript.json")),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let segments = json["segments"] as? [[String: Any]]
+        else { return false }
+        let words = segments
+            .compactMap { $0["text"] as? String }
+            .joined(separator: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .count
+        guard words <= Config.autoDiscardMaxWords() else { return false }
+
+        do {
+            try FileManager.default.trashItem(at: dir, resultingItemURL: nil)
+        } catch {
+            log(dir, "auto-discard failed: \(error)")
+            return false
+        }
+        FileHandle.standardError.write(Data(
+            "discarded \(dir.lastPathComponent) (\(duration)s, \(words) words) → Trash\n".utf8
+        ))
+        notifyUser(
+            title: "quill — short recording discarded",
+            body: "\(dir.lastPathComponent) (\(duration)s, \(words) words) moved to Trash."
+        )
+        return true
     }
 
     /// Fires the configured on_stop shell command with the session directory

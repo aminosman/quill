@@ -150,19 +150,26 @@ struct Project {
                 atPath: link(for: meeting).path)) != nil
     }
 
+    /// Outcome of an auto-file pass: what got linked, and which projects
+    /// were mentioned exactly once — too weak to file on, but worth telling
+    /// the user about so they can resolve the ambiguity by hand.
+    struct AutoFileResult {
+        let filed: [String]
+        let ambiguous: [String]
+    }
+
     /// Auto-file a transcribed session: link it into every project whose
     /// name appears at least twice in the transcript. Matching is
     /// case-insensitive on whole words with separators normalized, so
     /// project "billing-service" matches spoken "billing service". Names
     /// shorter than 4 characters are skipped — too many false hits.
-    /// Returns the project names it filed to.
-    static func autoFile(_ sessionDir: URL, projectsRoot: URL) -> [String] {
+    static func autoFile(_ sessionDir: URL, projectsRoot: URL) -> AutoFileResult {
         guard
             let data = try? Data(
                 contentsOf: sessionDir.appendingPathComponent("transcript.json")),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let segments = json["segments"] as? [[String: Any]]
-        else { return [] }
+        else { return AutoFileResult(filed: [], ambiguous: []) }
 
         let spoken = " " + normalize(segments.compactMap { $0["text"] as? String }
             .joined(separator: " ")) + " "
@@ -171,14 +178,17 @@ struct Project {
         )
 
         var filed: [String] = []
+        var ambiguous: [String] = []
         for project in all(in: projectsRoot) {
             let phrase = normalize(project.name)
             guard phrase.count >= 4, !project.isLinked(meeting) else { continue }
-            if mentions(of: " \(phrase) ", in: spoken) >= 2, project.toggleLink(meeting) {
-                filed.append(project.name)
+            switch mentions(of: " \(phrase) ", in: spoken) {
+            case 0: continue
+            case 1: ambiguous.append(project.name)
+            default: if project.toggleLink(meeting) { filed.append(project.name) }
             }
         }
-        return filed
+        return AutoFileResult(filed: filed, ambiguous: ambiguous)
     }
 
     /// Lowercase, every non-alphanumeric run collapsed to a single space.

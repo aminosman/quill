@@ -43,6 +43,26 @@ enum Config {
         load()?["auto_file"] as? Bool ?? true
     }
 
+    /// Auto-discard: recordings that are both short and nearly wordless
+    /// (accidental triggers, dropped calls) go to the Trash instead of
+    /// cluttering the menu. Both thresholds must hold — a long recording is
+    /// never discarded no matter how empty its transcript.
+    static func autoDiscardEnabled() -> Bool {
+        autoDiscard()?["enabled"] as? Bool ?? true
+    }
+
+    static func autoDiscardMaxSeconds() -> Int {
+        autoDiscard()?["max_seconds"] as? Int ?? 120
+    }
+
+    static func autoDiscardMaxWords() -> Int {
+        autoDiscard()?["max_words"] as? Int ?? 25
+    }
+
+    private static func autoDiscard() -> [String: Any]? {
+        load()?["auto_discard"] as? [String: Any]
+    }
+
     /// Persist a new projects root (from the menu's folder picker), keeping
     /// every other key in the config file intact.
     static func setProjectsDir(_ url: URL) {
