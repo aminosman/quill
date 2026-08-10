@@ -114,9 +114,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     /// Reflect recording state in the menu bar and menu item titles. While
-    /// recording, the feather turns red and a live elapsed counter sits next
-    /// to it — recording should be obvious at a glance, not something you
-    /// open the menu to discover. Call once a second while recording.
+    /// recording, a live elapsed counter sits next to the feather —
+    /// recording should be obvious at a glance, not something you open the
+    /// menu to discover. Call once a second while recording.
     func update(recording: Bool, elapsed: String?) {
         self.recording = recording
         self.elapsedText = elapsed
@@ -150,7 +150,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             stateLabel.title = "Idle"
         }
         toggleItem.title = recording ? "Stop recording" : "Start recording"
-        statusItem.button?.contentTintColor = recording ? .systemRed : nil
     }
 
     /// Reflect the auto-record arm state as a checkmark on the menu item.
@@ -174,8 +173,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     /// Compose the status button title: live elapsed counter while
-    /// recording, unread dot while something's waiting — both red, both
-    /// next to the feather.
+    /// recording, red dot while something's unread. No explicit color on
+    /// the counter and no tint on the feather — menu bar vibrancy composites
+    /// explicit colors into illegible near-black; only the adaptive template
+    /// style renders white like every other status item.
     private func renderButton() {
         guard let button = statusItem.button else { return }
         let title = NSMutableAttributedString()
@@ -184,7 +185,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 string: " \(elapsedText ?? "0:00")",
                 attributes: [
                     .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-                    .foregroundColor: NSColor.systemRed,
                 ]
             ))
         }
