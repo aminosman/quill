@@ -37,6 +37,28 @@ enum Config {
         return URL(fileURLWithPath: (dir as NSString).expandingTildeInPath, isDirectory: true)
     }
 
+    /// Persist a new projects root (from the menu's folder picker), keeping
+    /// every other key in the config file intact.
+    static func setProjectsDir(_ url: URL) {
+        var json = load() ?? [:]
+        json["projects_dir"] = url.path
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: json,
+            options: [.prettyPrinted, .sortedKeys]
+        ) else { return }
+        try? FileManager.default.createDirectory(
+            at: path.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        do {
+            try data.write(to: path, options: .atomic)
+        } catch {
+            FileHandle.standardError.write(Data(
+                "warning: couldn't save projects_dir to \(path.path): \(error)\n".utf8
+            ))
+        }
+    }
+
     /// The configured recordings root, or nil if no config file / no key.
     static func recordingsDir() -> URL? {
         guard let dir = load()?["recordings_dir"] as? String, !dir.isEmpty else { return nil }

@@ -116,7 +116,7 @@ Optional, at `~/.config/quill/config.json`:
 - `recordings_dir` — where sessions land. Resolution order: `--out` flag >
   config > `~/Recordings`.
 - `projects_dir` — whose subdirectories are the linkable projects (default
-  `~/Projects`).
+  `~/Projects`); also settable from the menu via *Choose projects folder…*.
 - `transcription.enabled` — set `false` to just record.
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't

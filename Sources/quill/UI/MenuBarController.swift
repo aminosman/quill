@@ -12,7 +12,7 @@ import AppKit
 @MainActor
 final class MenuBarController: NSObject, NSMenuDelegate {
     private let recordingsRoot: URL
-    private let projectsRoot: URL
+    private var projectsRoot: URL
 
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
@@ -77,6 +77,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         )
         menu.addItem(openFolder)
 
+        let chooseProjects = NSMenuItem(
+            title: "Choose projects folder…",
+            action: #selector(chooseProjectsFolderClicked),
+            keyEquivalent: ""
+        )
+        menu.addItem(chooseProjects)
+
         menu.addItem(.separator())
 
         let quit = NSMenuItem(
@@ -88,7 +95,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         super.init()
 
-        for item in [toggleItem, autoRecordItem, openFolder, quit] {
+        for item in [toggleItem, autoRecordItem, openFolder, chooseProjects, quit] {
             item.target = self
         }
         menu.delegate = self
@@ -279,6 +286,23 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func autoRecordClicked() { onToggleAutoRecord?() }
     @objc private func openFolderClicked() { onOpenFolder?() }
     @objc private func quitClicked() { onQuit?() }
+
+    /// Folder picker for the projects root, persisted to the config file.
+    /// Menus and viewer windows read `projectsRoot` at open time, so the new
+    /// choice takes effect immediately.
+    @objc private func chooseProjectsFolderClicked() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = projectsRoot
+        panel.message = "Choose the folder whose subfolders are your projects."
+        panel.prompt = "Use as Projects Folder"
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        projectsRoot = url
+        Config.setProjectsDir(url)
+    }
 
     @objc private func openTranscriptClicked(_ sender: NSMenuItem) {
         guard let dir = sender.representedObject as? URL else { return }
