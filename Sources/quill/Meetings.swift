@@ -150,6 +150,56 @@ struct Project {
                 atPath: link(for: meeting).path)) != nil
     }
 
+    /// Auto-file a transcribed session: link it into every project whose
+    /// name appears at least twice in the transcript. Matching is
+    /// case-insensitive on whole words with separators normalized, so
+    /// project "billing-service" matches spoken "billing service". Names
+    /// shorter than 4 characters are skipped — too many false hits.
+    /// Returns the project names it filed to.
+    static func autoFile(_ sessionDir: URL, projectsRoot: URL) -> [String] {
+        guard
+            let data = try? Data(
+                contentsOf: sessionDir.appendingPathComponent("transcript.json")),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let segments = json["segments"] as? [[String: Any]]
+        else { return [] }
+
+        let spoken = " " + normalize(segments.compactMap { $0["text"] as? String }
+            .joined(separator: " ")) + " "
+        let meeting = Meeting(
+            dir: sessionDir, hasTranscript: true, isUnread: true, durationSeconds: nil
+        )
+
+        var filed: [String] = []
+        for project in all(in: projectsRoot) {
+            let phrase = normalize(project.name)
+            guard phrase.count >= 4, !project.isLinked(meeting) else { continue }
+            if mentions(of: " \(phrase) ", in: spoken) >= 2, project.toggleLink(meeting) {
+                filed.append(project.name)
+            }
+        }
+        return filed
+    }
+
+    /// Lowercase, every non-alphanumeric run collapsed to a single space.
+    private static func normalize(_ s: String) -> String {
+        String(s.lowercased().map { $0.isLetter || $0.isNumber ? $0 : " " })
+            .split(separator: " ")
+            .joined(separator: " ")
+    }
+
+    private static func mentions(of needle: String, in haystack: String) -> Int {
+        var count = 0
+        var start = haystack.startIndex
+        while let found = haystack.range(of: needle, range: start..<haystack.endIndex) {
+            count += 1
+            // Step back one so a trailing space can serve as the next
+            // match's leading space ("… quill quill …").
+            start = haystack.index(before: found.upperBound)
+        }
+        return count
+    }
+
     /// Drop every project's link to a meeting — for when the recording
     /// itself is deleted, so no dangling symlinks stay behind.
     static func removeAllLinks(to meeting: Meeting, in root: URL) {

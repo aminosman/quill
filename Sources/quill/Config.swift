@@ -37,6 +37,12 @@ enum Config {
         return URL(fileURLWithPath: (dir as NSString).expandingTildeInPath, isDirectory: true)
     }
 
+    /// Whether finished transcripts are scanned for project-name mentions
+    /// and auto-linked into matching projects' meetings folders. Default on.
+    static func autoFileEnabled() -> Bool {
+        load()?["auto_file"] as? Bool ?? true
+    }
+
     /// Persist a new projects root (from the menu's folder picker), keeping
     /// every other key in the config file intact.
     static func setProjectsDir(_ url: URL) {

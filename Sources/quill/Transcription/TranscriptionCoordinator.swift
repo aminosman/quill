@@ -81,7 +81,14 @@ actor TranscriptionCoordinator {
             do {
                 try await transcribe(dir)
                 Meeting.markUnread(dir)
-                notifyUser(title: "quill — transcript ready", body: dir.lastPathComponent)
+                var body = dir.lastPathComponent
+                if Config.autoFileEnabled() {
+                    let filed = Project.autoFile(dir, projectsRoot: Config.projectsDir())
+                    if !filed.isEmpty {
+                        body += " · filed to \(filed.joined(separator: ", "))"
+                    }
+                }
+                notifyUser(title: "quill — transcript ready", body: body)
                 runHook(for: dir)
             } catch {
                 log(dir, "transcription failed: \(error)")

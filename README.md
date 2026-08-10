@@ -59,6 +59,13 @@ meeting can link to several projects; click again to unlink. All of this is
 plain filesystem state: the unread flag is an `.unread` marker in the session
 folder, project recency is the `meetings/` directory's mtime.
 
+With **auto-file** on (`auto_file`, default on), each finished transcript is
+scanned for project names and linked automatically — the "transcript ready"
+notification says where it was filed. A project matches when its name is
+spoken at least twice (whole words, case-insensitive, `-`/`_` read as
+spaces, names under 4 characters skipped). Auto-filing never marks the
+meeting read — the red dot stays until you look at it.
+
 Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 
 | File | Contents |
@@ -117,6 +124,8 @@ Optional, at `~/.config/quill/config.json`:
   config > `~/Recordings`.
 - `projects_dir` — whose subdirectories are the linkable projects (default
   `~/Projects`); also settable from the menu via *Choose projects folder…*.
+- `auto_file` — scan finished transcripts for project-name mentions and link
+  them into the matching projects automatically (default on).
 - `transcription.enabled` — set `false` to just record.
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't
