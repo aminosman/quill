@@ -32,6 +32,33 @@ transcription speed.
    automatically (the menu shows progress); a notification fires when the
    transcript is ready.
 
+Or don't click at all: **auto-record** (on by default, toggleable in the menu)
+watches for meeting apps and browsers using the microphone and starts a
+session by itself — a notification tells you it's rolling. It stops once the
+mic has been free for a grace period, then transcribes as usual. Every app's
+mic use is logged to stderr (`/tmp/quill.err.log` under the LaunchAgent), so
+adding an unlisted app to the watchlist is just reading off its bundle ID.
+
+## Meetings in the menu
+
+The menu lists the **last five meetings**. A red dot on the feather (and on
+the meeting row) means a transcript finished and hasn't been looked at yet;
+viewing the transcript, opening the folder, or filing the meeting clears it.
+
+**View transcript** opens a viewer window: the conversation as a
+speaker-tagged, timestamped list (me in blue, them in orange), with a filter
+field, selectable text, project filing from the footer, and a
+delete-to-Trash button that also cleans up any project links.
+
+Each meeting's submenu offers **Link to project**: projects are the
+subdirectories of `~/Projects` (configurable via `projects_dir`), most
+recently used first. Linking symlinks the session folder into
+`<project>/meetings/` — created on first use — so transcripts sit next to the
+code they're about while the recording itself stays in the recordings root. A
+meeting can link to several projects; click again to unlink. All of this is
+plain filesystem state: the unread flag is an `.unread` marker in the session
+folder, project recency is the `meetings/` directory's mtime.
+
 Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 
 | File | Contents |
@@ -76,12 +103,20 @@ Optional, at `~/.config/quill/config.json`:
 {
   "recordings_dir": "~/Recordings",
   "transcription": { "enabled": true, "engine": "parakeet" },
+  "auto_record": {
+    "enabled": true,
+    "apps": ["com.tinyspeck.slackmacgap", "us.zoom.xos"],
+    "min_mic_seconds": 3,
+    "stop_grace_seconds": 20
+  },
   "on_stop": "my-hook"
 }
 ```
 
 - `recordings_dir` — where sessions land. Resolution order: `--out` flag >
   config > `~/Recordings`.
+- `projects_dir` — whose subdirectories are the linkable projects (default
+  `~/Projects`).
 - `transcription.enabled` — set `false` to just record.
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't
@@ -89,6 +124,19 @@ Optional, at `~/.config/quill/config.json`:
   the voice unit is live, macOS ducks other playback slightly (`.min` ducking
   is configured, but it can't be zeroed). On headphones there's no echo to
   cancel, so raw capture is the better default.
+- `auto_record.enabled` — start/stop recordings automatically when a watched
+  app uses the mic (default on; also toggleable from the menu bar).
+- `auto_record.apps` — bundle-ID prefixes to watch. Defaults cover Slack,
+  Zoom, Teams, FaceTime, Discord, and the major browsers; helper processes
+  (`com.google.Chrome.helper`) match their parent. Note browsers grab the mic
+  for more than meetings — voice search and mic-permission prompts shorter
+  than `min_mic_seconds` are filtered, but a long dictation session will
+  trigger a recording.
+- `auto_record.min_mic_seconds` — how long the mic must be held before
+  recording starts (default 3).
+- `auto_record.stop_grace_seconds` — how long the mic must stay free before
+  an auto-started recording stops (default 20), so a dropped-and-rejoined
+  call stays one session. Manually started recordings never auto-stop.
 - `on_stop` — shell command spawned with the session directory as its
   argument, **after the transcript is written** (or right after recording if
   transcription is disabled). Wire it to whatever comes next: summarization,

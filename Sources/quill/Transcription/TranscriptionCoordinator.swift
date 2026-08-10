@@ -28,6 +28,9 @@ actor TranscriptionCoordinator {
     /// on_stop hook still fires — it just gets an untranscribed folder.
     func enqueue(_ sessionDir: URL) {
         guard Config.transcriptionEnabled() else {
+            // No transcript coming — the recording itself is the deliverable,
+            // so it's "ready" (and unread) right now.
+            Meeting.markUnread(sessionDir)
             runHook(for: sessionDir)
             return
         }
@@ -77,6 +80,7 @@ actor TranscriptionCoordinator {
             publish(.transcribing(session: dir.lastPathComponent, queued: queue.count))
             do {
                 try await transcribe(dir)
+                Meeting.markUnread(dir)
                 notifyUser(title: "quill — transcript ready", body: dir.lastPathComponent)
                 runHook(for: dir)
             } catch {

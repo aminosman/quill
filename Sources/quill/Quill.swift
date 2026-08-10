@@ -79,17 +79,34 @@ struct Doctor: ParsableCommand {
 @MainActor
 final class AppController {
     private let root: URL
-    private let menuBar = MenuBarController()
+    private let menuBar: MenuBarController
     private let transcription = TranscriptionCoordinator()
+    private let micMonitor: MicActivityMonitor
     private var session: RecordingSession?
     private var ticker: Timer?
+    private var autoRecord = Config.autoRecordEnabled()
+    /// True while the live session was started by the mic monitor rather than
+    /// a click — only those sessions auto-stop when the mic frees up.
+    private var sessionAutoStarted = false
 
     init(root: URL) {
         self.root = root
+        menuBar = MenuBarController(recordingsRoot: root, projectsRoot: Config.projectsDir())
+        micMonitor = MicActivityMonitor(
+            watchlist: Config.autoRecordApps(),
+            startDelay: Config.autoRecordMinMicSeconds(),
+            stopGrace: Config.autoRecordStopGraceSeconds()
+        )
         menuBar.onToggle = { [weak self] in self?.toggle() }
+        menuBar.onToggleAutoRecord = { [weak self] in self?.toggleAutoRecord() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
         menuBar.update(recording: false, elapsed: nil)
+        menuBar.setAutoRecord(autoRecord)
+
+        micMonitor.onMicActive = { [weak self] bundleID in self?.autoStart(trigger: bundleID) }
+        micMonitor.onMicIdle = { [weak self] in self?.autoStop() }
+        micMonitor.start()
 
         Task { [transcription, root] in
             await transcription.setStatusHandler { status in
@@ -108,11 +125,54 @@ final class AppController {
     }
 
     private func toggle() {
+        // A manual click always takes ownership: a manually stopped session
+        // won't auto-restart until the mic goes fully idle and comes back.
+        sessionAutoStarted = false
         if session == nil {
             startSession()
         } else {
             stopSession()
         }
+    }
+
+    private func toggleAutoRecord() {
+        autoRecord.toggle()
+        menuBar.setAutoRecord(autoRecord)
+    }
+
+    private func autoStart(trigger bundleID: String) {
+        guard autoRecord, session == nil else { return }
+        startSession()
+        guard session != nil else { return }
+        sessionAutoStarted = true
+        notifyUser(
+            title: "quill — recording started",
+            body: "\(Self.appName(for: bundleID)) is using the microphone. "
+                + "Stops when the mic frees up, or from the menu bar."
+        )
+    }
+
+    private func autoStop() {
+        guard sessionAutoStarted else { return }
+        sessionAutoStarted = false
+        stopSession()
+        notifyUser(
+            title: "quill — recording stopped",
+            body: "The microphone is no longer in use."
+        )
+    }
+
+    /// Human name for a bundle ID, walking up parent bundles so helper
+    /// processes (com.google.Chrome.helper) resolve to the app they belong to.
+    private static func appName(for bundleID: String) -> String {
+        var candidate = bundleID
+        while !candidate.isEmpty {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: candidate) {
+                return url.deletingPathExtension().lastPathComponent
+            }
+            candidate = candidate.split(separator: ".").dropLast().joined(separator: ".")
+        }
+        return bundleID
     }
 
     private func startSession() {
@@ -146,10 +206,17 @@ final class AppController {
         menuBar.update(recording: false, elapsed: nil)
 
         let dir = session.dir
-        Task { [transcription] in await transcription.enqueue(dir) }
+        Task { [transcription, weak self] in
+            await transcription.enqueue(dir)
+            // With transcription disabled, the session went straight to
+            // "ready" inside enqueue — reflect the unread dot now.
+            self?.menuBar.refreshUnread()
+        }
     }
 
     private func showTranscription(_ status: TranscriptionCoordinator.Status) {
+        // Every status change is a moment a transcript may have just landed.
+        menuBar.refreshUnread()
         switch status {
         case .idle:
             menuBar.updateTranscription(nil)
