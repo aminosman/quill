@@ -117,7 +117,34 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// recording.
     func update(recording: Bool, elapsed: String?) {
         self.recording = recording
-        stateLabel.title = recording ? "● recording · \(elapsed ?? "0:00")" : "idle"
+        if recording {
+            // Disabled items gray out plain titles but render attributed ones
+            // as given — that's what lets the dot stay red. Monospaced digits
+            // keep the ticking counter from jiggling the layout.
+            let title = NSMutableAttributedString()
+            title.append(NSAttributedString(
+                string: "● ", attributes: [.foregroundColor: NSColor.systemRed]
+            ))
+            title.append(NSAttributedString(
+                string: "Recording",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold),
+                    .foregroundColor: NSColor.labelColor,
+                ]
+            ))
+            title.append(NSAttributedString(
+                string: "   \(elapsed ?? "0:00")",
+                attributes: [
+                    .font: NSFont.monospacedDigitSystemFont(
+                        ofSize: NSFont.systemFontSize, weight: .regular),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ]
+            ))
+            stateLabel.attributedTitle = title
+        } else {
+            stateLabel.attributedTitle = nil
+            stateLabel.title = "Idle"
+        }
         toggleItem.title = recording ? "Stop recording" : "Start recording"
         statusItem.button?.contentTintColor = recording ? .systemRed : nil
     }
