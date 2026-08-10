@@ -66,15 +66,22 @@ meeting can link to several projects; click again to unlink. All of this is
 plain filesystem state: the unread flag is an `.unread` marker in the session
 folder, project recency is the `meetings/` directory's mtime.
 
+Not every directory is a meeting project — **Meetingable projects** in the
+menu is a checklist of which ones count (`meeting_projects` in config;
+everything checked until you save a selection). Only meetingable projects
+appear in link menus and can auto-match, which keeps personal folders from
+muddying the matcher.
+
 With **auto-file** on (`auto_file`, default on), each finished transcript is
-scanned for project names and linked automatically. A project matches when
-its name is spoken at least twice (whole words, case-insensitive, `-`/`_`
-read as spaces, names under 4 characters skipped). The notification tells
-you which case you're in: **"transcript filed"** names the projects it went
-to; **"transcript needs filing"** means a project came up only once —
-too ambiguous to file on, resolve it from the menu; plain **"transcript
-ready"** means no project was mentioned at all. Auto-filing never marks the
-meeting read — the red dot stays until you look at it.
+scanned for meetingable project names and filed to **the single best
+match**: the project mentioned most, strictly more than any other, at least
+twice (whole words, case-insensitive, `-`/`_` read as spaces, names under 4
+characters skipped). The notification tells you which case you're in:
+**"transcript filed"** names the project and clears the red dot — it's
+categorized, nothing left to do; **"transcript needs filing"** means a tie
+or only passing mentions — too ambiguous to call, resolve it from the menu;
+plain **"transcript ready"** means no project was mentioned at all. In the
+ambiguous and no-match cases the red dot stays until you file or read it.
 
 **Auto-discard** (`auto_discard.enabled`, default on) keeps noise out of the
 menu: a recording that is both short (`max_seconds`, default 120) and nearly
@@ -140,8 +147,10 @@ Optional, at `~/.config/quill/config.json`:
   config > `~/Recordings`.
 - `projects_dir` — whose subdirectories are the linkable projects (default
   `~/Projects`); also settable from the menu via *Choose projects folder…*.
-- `auto_file` — scan finished transcripts for project-name mentions and link
-  them into the matching projects automatically (default on).
+- `auto_file` — scan finished transcripts for project-name mentions and file
+  each to its single best-matching project automatically (default on).
+- `meeting_projects` — the meetingable allowlist, managed from the menu;
+  absent = every project directory is eligible.
 - `transcription.enabled` — set `false` to just record.
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't

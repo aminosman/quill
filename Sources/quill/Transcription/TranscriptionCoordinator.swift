@@ -169,10 +169,13 @@ actor TranscriptionCoordinator {
             return
         }
         let result = Project.autoFile(dir, projectsRoot: Config.projectsDir())
-        if !result.filed.isEmpty {
+        if let filed = result.filed {
+            // Categorized — nothing left to do, so the unread dot clears.
+            Meeting(dir: dir, hasTranscript: true, isUnread: false, durationSeconds: nil)
+                .markRead()
             notifyUser(
                 title: "quill — transcript filed",
-                body: "\(name) → \(result.filed.joined(separator: ", "))"
+                body: "\(name) → \(filed)"
             )
         } else if !result.ambiguous.isEmpty {
             notifyUser(

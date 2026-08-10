@@ -196,7 +196,7 @@ struct TranscriptView: View {
     private var footer: some View {
         HStack {
             Menu {
-                ForEach(Project.all(in: projectsRoot), id: \.dir) { project in
+                ForEach(Project.enabled(in: projectsRoot), id: \.dir) { project in
                     Button {
                         project.toggleLink(doc.meeting)
                         doc.meeting.markRead()
@@ -240,6 +240,8 @@ struct TranscriptView: View {
     }
 
     private func refreshLinks() {
+        // All projects, not just meetingable — an existing link to a since-
+        // disabled project should still show as filed.
         linked = Set(
             Project.all(in: projectsRoot)
                 .filter { $0.isLinked(doc.meeting) }

@@ -150,26 +150,37 @@ struct Project {
                 atPath: link(for: meeting).path)) != nil
     }
 
-    /// Outcome of an auto-file pass: what got linked, and which projects
-    /// were mentioned exactly once — too weak to file on, but worth telling
-    /// the user about so they can resolve the ambiguity by hand.
+    /// Outcome of an auto-file pass: the single project that won, or the
+    /// candidates that were too close (or too weak) to call — the user
+    /// resolves those by hand.
     struct AutoFileResult {
-        let filed: [String]
+        let filed: String?
         let ambiguous: [String]
     }
 
-    /// Auto-file a transcribed session: link it into every project whose
-    /// name appears at least twice in the transcript. Matching is
-    /// case-insensitive on whole words with separators normalized, so
-    /// project "billing-service" matches spoken "billing service". Names
-    /// shorter than 4 characters are skipped — too many false hits.
+    /// Projects enabled for meetings: the "meetingable" allowlist from
+    /// config, or every subdirectory when no list has been saved yet.
+    static func enabled(in root: URL) -> [Project] {
+        let projects = all(in: root)
+        guard let names = Config.meetingProjects() else { return projects }
+        let allowed = Set(names)
+        return projects.filter { allowed.contains($0.name) }
+    }
+
+    /// Auto-file a transcribed session into the single meetingable project
+    /// whose name is mentioned most — and strictly more than any other.
+    /// Matching is case-insensitive on whole words with separators
+    /// normalized, so project "billing-service" matches spoken "billing
+    /// service"; names shorter than 4 characters are skipped. A clear win
+    /// needs at least two mentions; a tie at the top, or nothing but
+    /// single mentions, is reported as ambiguous instead of filed.
     static func autoFile(_ sessionDir: URL, projectsRoot: URL) -> AutoFileResult {
         guard
             let data = try? Data(
                 contentsOf: sessionDir.appendingPathComponent("transcript.json")),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let segments = json["segments"] as? [[String: Any]]
-        else { return AutoFileResult(filed: [], ambiguous: []) }
+        else { return AutoFileResult(filed: nil, ambiguous: []) }
 
         let spoken = " " + normalize(segments.compactMap { $0["text"] as? String }
             .joined(separator: " ")) + " "
@@ -177,18 +188,27 @@ struct Project {
             dir: sessionDir, hasTranscript: true, isUnread: true, durationSeconds: nil
         )
 
-        var filed: [String] = []
-        var ambiguous: [String] = []
-        for project in all(in: projectsRoot) {
-            let phrase = normalize(project.name)
-            guard phrase.count >= 4, !project.isLinked(meeting) else { continue }
-            switch mentions(of: " \(phrase) ", in: spoken) {
-            case 0: continue
-            case 1: ambiguous.append(project.name)
-            default: if project.toggleLink(meeting) { filed.append(project.name) }
+        let counts = enabled(in: projectsRoot)
+            .compactMap { project -> (project: Project, count: Int)? in
+                let phrase = normalize(project.name)
+                guard phrase.count >= 4 else { return nil }
+                let count = mentions(of: " \(phrase) ", in: spoken)
+                return count > 0 ? (project, count) : nil
             }
+            .sorted { $0.count > $1.count }
+
+        guard let top = counts.first, top.count >= 2 else {
+            // Nothing spoken twice — every mention is too weak to file on.
+            return AutoFileResult(filed: nil, ambiguous: counts.map(\.project.name))
         }
-        return AutoFileResult(filed: filed, ambiguous: ambiguous)
+        let tied = counts.filter { $0.count == top.count }
+        guard tied.count == 1 else {
+            return AutoFileResult(filed: nil, ambiguous: tied.map(\.project.name))
+        }
+        if top.project.isLinked(meeting) || top.project.toggleLink(meeting) {
+            return AutoFileResult(filed: top.project.name, ambiguous: [])
+        }
+        return AutoFileResult(filed: nil, ambiguous: [])
     }
 
     /// Lowercase, every non-alphanumeric run collapsed to a single space.

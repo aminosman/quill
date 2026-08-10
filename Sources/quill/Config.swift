@@ -66,8 +66,23 @@ enum Config {
     /// Persist a new projects root (from the menu's folder picker), keeping
     /// every other key in the config file intact.
     static func setProjectsDir(_ url: URL) {
+        set("projects_dir", to: url.path)
+    }
+
+    /// Projects enabled for meetings ("meetingable") — only these appear in
+    /// link menus and can auto-match. nil = no list saved yet = all projects.
+    static func meetingProjects() -> [String]? {
+        load()?["meeting_projects"] as? [String]
+    }
+
+    static func setMeetingProjects(_ names: [String]) {
+        set("meeting_projects", to: names.sorted())
+    }
+
+    /// Read-modify-write one key of the config file, preserving the rest.
+    private static func set(_ key: String, to value: Any) {
         var json = load() ?? [:]
-        json["projects_dir"] = url.path
+        json[key] = value
         guard let data = try? JSONSerialization.data(
             withJSONObject: json,
             options: [.prettyPrinted, .sortedKeys]
@@ -80,7 +95,7 @@ enum Config {
             try data.write(to: path, options: .atomic)
         } catch {
             FileHandle.standardError.write(Data(
-                "warning: couldn't save projects_dir to \(path.path): \(error)\n".utf8
+                "warning: couldn't save \(key) to \(path.path): \(error)\n".utf8
             ))
         }
     }

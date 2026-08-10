@@ -21,6 +21,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let toggleItem: NSMenuItem
     private let autoRecordItem: NSMenuItem
     private let meetingsAnchor: NSMenuItem
+    private var meetingableItem: NSMenuItem!
     private var recording = false
     private var elapsedText: String?
     private var unread = false
@@ -85,6 +86,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             keyEquivalent: ""
         )
         menu.addItem(chooseProjects)
+
+        meetingableItem = NSMenuItem(title: "Meetingable projects", action: nil, keyEquivalent: "")
+        meetingableItem.submenu = NSMenu()
+        meetingableItem.submenu?.autoenablesItems = false
+        menu.addItem(meetingableItem)
 
         menu.addItem(.separator())
 
@@ -206,7 +212,28 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard menu === self.menu else { return }
         rebuildMeetings()
+        rebuildMeetingable()
         refreshUnread()
+    }
+
+    /// Checklist of every project directory; checked = meetingable. Only
+    /// checked projects appear in link menus and can auto-match.
+    private func rebuildMeetingable() {
+        guard let sub = meetingableItem.submenu else { return }
+        sub.removeAllItems()
+        let enabledNames = Set(Project.enabled(in: projectsRoot).map(\.name))
+        for project in Project.all(in: projectsRoot) {
+            let item = NSMenuItem(
+                title: project.name,
+                action: #selector(meetingableClicked(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.state = enabledNames.contains(project.name) ? .on : .off
+            item.representedObject = project.name
+            sub.addItem(item)
+        }
+        meetingableItem.isHidden = sub.items.isEmpty
     }
 
     private func rebuildMeetings() {
@@ -224,7 +251,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.insertItem(header, at: index)
         index += 1
 
-        let projects = Project.all(in: projectsRoot)
+        let projects = Project.enabled(in: projectsRoot)
         for meeting in meetings {
             let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
             item.tag = Self.meetingTag
@@ -343,6 +370,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         Self.meeting(at: dir).markRead()
         NSWorkspace.shared.open(dir)
         refreshUnread()
+    }
+
+    @objc private func meetingableClicked(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        var names = Set(Project.enabled(in: projectsRoot).map(\.name))
+        if names.contains(name) { names.remove(name) } else { names.insert(name) }
+        Config.setMeetingProjects(Array(names))
     }
 
     @objc private func projectClicked(_ sender: NSMenuItem) {
