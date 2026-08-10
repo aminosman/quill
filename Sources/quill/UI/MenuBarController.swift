@@ -22,6 +22,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let autoRecordItem: NSMenuItem
     private let meetingsAnchor: NSMenuItem
     private var recording = false
+    private var elapsedText: String?
+    private var unread = false
 
     var onToggle: (() -> Void)?
     var onToggleAutoRecord: (() -> Void)?
@@ -111,12 +113,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         refreshUnread()
     }
 
-    /// Reflect recording state in the icon tint and menu item titles. The
-    /// menu bar shows only the feather (red while recording); the elapsed
-    /// counter lives in the menu's state label. Call once a second while
-    /// recording.
+    /// Reflect recording state in the menu bar and menu item titles. While
+    /// recording, the feather turns red and a live elapsed counter sits next
+    /// to it — recording should be obvious at a glance, not something you
+    /// open the menu to discover. Call once a second while recording.
     func update(recording: Bool, elapsed: String?) {
         self.recording = recording
+        self.elapsedText = elapsed
+        renderButton()
         if recording {
             // Disabled items gray out plain titles but render attributed ones
             // as given — that's what lets the dot stay red. Monospaced digits
@@ -165,20 +169,36 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// Re-derive the red unread dot from the filesystem. Call whenever a
     /// transcript may have landed or been read.
     func refreshUnread() {
-        let unread = Meeting.anyUnread(in: recordingsRoot)
+        unread = Meeting.anyUnread(in: recordingsRoot)
+        renderButton()
+    }
+
+    /// Compose the status button title: live elapsed counter while
+    /// recording, unread dot while something's waiting — both red, both
+    /// next to the feather.
+    private func renderButton() {
         guard let button = statusItem.button else { return }
+        let title = NSMutableAttributedString()
+        if recording {
+            title.append(NSAttributedString(
+                string: " \(elapsedText ?? "0:00")",
+                attributes: [
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+                    .foregroundColor: NSColor.systemRed,
+                ]
+            ))
+        }
         if unread {
-            button.attributedTitle = NSAttributedString(
+            title.append(NSAttributedString(
                 string: " ●",
                 attributes: [
                     .foregroundColor: NSColor.systemRed,
                     .font: NSFont.systemFont(ofSize: 8),
                     .baselineOffset: 3,
                 ]
-            )
-        } else {
-            button.title = ""
+            ))
         }
+        button.attributedTitle = title
     }
 
     // MARK: - Recent meetings
