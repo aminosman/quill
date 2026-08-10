@@ -17,6 +17,13 @@ sudo cp .build/release/quill /usr/local/bin/quill
 quill install --launch-at-login   # optional — runs in the background on login
 ```
 
+`install` also self-assembles a minimal `~/Applications/Quill.app` around a
+copy of the binary — Info.plist, feather icon, codesigned with your Apple
+Development identity when one exists — and points the LaunchAgent at it.
+The bundle is what lets notifications carry a real icon and gives the
+privacy permissions a stable identity that survives rebuilds. The CLI copy
+keeps working from wherever you put it.
+
 **Requires:** macOS 15+ (Core Audio process taps for system audio — no
 virtual device, no kernel extension). Apple Silicon recommended for
 transcription speed.
@@ -60,11 +67,20 @@ plain filesystem state: the unread flag is an `.unread` marker in the session
 folder, project recency is the `meetings/` directory's mtime.
 
 With **auto-file** on (`auto_file`, default on), each finished transcript is
-scanned for project names and linked automatically — the "transcript ready"
-notification says where it was filed. A project matches when its name is
-spoken at least twice (whole words, case-insensitive, `-`/`_` read as
-spaces, names under 4 characters skipped). Auto-filing never marks the
+scanned for project names and linked automatically. A project matches when
+its name is spoken at least twice (whole words, case-insensitive, `-`/`_`
+read as spaces, names under 4 characters skipped). The notification tells
+you which case you're in: **"transcript filed"** names the projects it went
+to; **"transcript needs filing"** means a project came up only once —
+too ambiguous to file on, resolve it from the menu; plain **"transcript
+ready"** means no project was mentioned at all. Auto-filing never marks the
 meeting read — the red dot stays until you look at it.
+
+**Auto-discard** (`auto_discard.enabled`, default on) keeps noise out of the
+menu: a recording that is both short (`max_seconds`, default 120) and nearly
+wordless (`max_words`, default 25) — an accidental trigger, a dropped call —
+is moved to the **Trash** (never hard-deleted, always recoverable) instead
+of entering the unread/auto-file pipeline.
 
 Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 

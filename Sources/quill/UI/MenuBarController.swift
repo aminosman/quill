@@ -104,7 +104,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         statusItem.menu = menu
 
         if let button = statusItem.button {
-            let image = Self.featherImage()
+            let image = Feather.menuImage()
             image?.isTemplate = true
             button.image = image
             button.imagePosition = .imageLeft
@@ -305,28 +305,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// before — a vanished dir just makes the action a no-op.
     private static func meeting(at dir: URL) -> Meeting {
         Meeting(dir: dir, hasTranscript: true, isUnread: false, durationSeconds: nil)
-    }
-
-    // Inlined Lucide feather SVG. Keeping it in source means the executable
-    // has no separate resource bundle to install alongside it — true
-    // single-binary.
-    private static let featherSVG = """
-    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" \
-    viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" \
-    stroke-linecap="round" stroke-linejoin="round">\
-    <path d="M12.67 19a2 2 0 0 0 1.416-.588l6.154-6.172a6 6 0 0 0-8.49-8.49L5.586 9.914A2 2 0 0 0 5 11.328V18a1 1 0 0 0 1 1z"/>\
-    <path d="M16 8 2 22"/>\
-    <path d="M17.5 15H9"/>\
-    </svg>
-    """
-
-    private static func featherImage() -> NSImage? {
-        guard let data = featherSVG.data(using: .utf8),
-              let image = NSImage(data: data)
-        else { return nil }
-        // Menu-bar status icons are nominally 18pt tall; size the SVG to match.
-        image.size = NSSize(width: 16, height: 16)
-        return image
     }
 
     @objc private func toggleClicked() { onToggle?() }

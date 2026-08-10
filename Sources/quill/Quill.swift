@@ -43,6 +43,7 @@ struct Run: ParsableCommand {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
+        requestNotificationAuthorization()
         let controller = AppController(root: root)
 
         let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
