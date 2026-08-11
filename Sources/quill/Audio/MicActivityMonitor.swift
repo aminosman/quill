@@ -34,7 +34,11 @@ final class MicActivityMonitor {
     private struct Proc {
         let label: String
         let bundleID: String
-        let watched: Bool
+        /// The watchlist entry this process matched, nil if unwatched. Helper
+        /// processes share their parent's entry, so "which app holds the mic"
+        /// compares equal across an app's processes.
+        let watchEntry: String?
+        var watched: Bool { watchEntry != nil }
     }
 
     private let watchlist: [String]
@@ -52,11 +56,20 @@ final class MicActivityMonitor {
     private var listeners: [AudioObjectID: AudioObjectPropertyListenerBlock] = [:]
     private var active: [AudioObjectID: Proc] = [:]
     private var pollTimer: Timer?
-    private var pendingStart: Timer?
-    private var pendingStop: Timer?
-    /// Non-nil between onMicActive and onMicIdle. Suppresses re-triggering
-    /// while the same call is still holding the mic (e.g. after a manual stop).
-    private var announcedBundleID: String?
+    private var wakeTimer: Timer?
+
+    // State machine. All transitions are decided from these timestamps at
+    // evaluation points (HAL events, the poll, wake timers) — never from a
+    // timer having fired. A windowless agent's timers get deferred by App
+    // Nap for minutes; a late evaluation with timestamps still makes the
+    // right call, and a mic re-grab after a longer-than-grace gap closes the
+    // old session retroactively instead of merging two meetings.
+    /// Watchlist entry that owns the current announced session, nil when idle.
+    private var announced: String?
+    /// Continuous watched-hold start — the start-debounce clock.
+    private var heldSince: Date?
+    /// When the watched set last went empty — the stop-grace clock.
+    private var idleSince: Date?
 
     init(watchlist: [String], startDelay: TimeInterval, stopGrace: TimeInterval) {
         self.watchlist = watchlist
@@ -82,9 +95,12 @@ final class MicActivityMonitor {
         listListener = block
         syncProcessList()
 
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
+        let poll = Timer(timeInterval: 4, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshAll() }
         }
+        poll.tolerance = 0
+        RunLoop.main.add(poll, forMode: .common)
+        pollTimer = poll
     }
 
     // MARK: - Process tracking
@@ -137,6 +153,9 @@ final class MicActivityMonitor {
 
     private func refreshAll() {
         for id in listeners.keys { refresh(process: id) }
+        // Evaluate even when nothing changed — elapsed time is itself a
+        // state change (debounce maturing, grace expiring).
+        evaluate()
     }
 
     private func refresh(process id: AudioObjectID) {
@@ -144,55 +163,85 @@ final class MicActivityMonitor {
             guard active[id] == nil else { return }
             let bundleID = bundleID(of: id)
             let label = bundleID.isEmpty ? "pid \(pid(of: id))" : bundleID
-            let watched = isWatched(bundleID)
-            active[id] = Proc(label: label, bundleID: bundleID, watched: watched)
-            log("mic on: \(label)\(watched ? "" : " (not in auto_record.apps)")")
-            if watched { reevaluate() }
+            let entry = watchEntry(for: bundleID)
+            active[id] = Proc(label: label, bundleID: bundleID, watchEntry: entry)
+            log("mic on: \(label)\(entry == nil ? " (not in auto_record.apps)" : "")")
+            if entry != nil { evaluate() }
         } else if let proc = active.removeValue(forKey: id) {
             log("mic off: \(proc.label)")
-            if proc.watched { reevaluate() }
+            if proc.watched { evaluate() }
         }
     }
 
-    // MARK: - Debounced state machine
+    // MARK: - Timestamp-driven state machine
 
-    private func reevaluate() {
-        let held = active.values.contains(where: \.watched)
-        if held {
-            pendingStop?.invalidate()
-            pendingStop = nil
-            if announcedBundleID == nil, pendingStart == nil {
-                pendingStart = Timer.scheduledTimer(withTimeInterval: startDelay, repeats: false) {
-                    [weak self] _ in
-                    MainActor.assumeIsolated { self?.fireActiveIfStillHeld() }
+    private func evaluate() {
+        let now = Date()
+        let holders = active.values.filter(\.watched)
+
+        if let holder = holders.first {
+            if heldSince == nil { heldSince = now }
+
+            if announced != nil {
+                let gap = idleSince.map { now.timeIntervalSince($0) } ?? 0
+                let announcedStillHolding = holders.contains { $0.watchEntry == announced }
+                if gap >= stopGrace {
+                    // The idle stretch before this grab outlasted the grace —
+                    // that was a meeting boundary, however late we noticed.
+                    log("mic re-grab after \(Int(gap))s idle — treating as a new meeting")
+                    endAnnounced()
+                    heldSince = now
+                } else if !announcedStillHolding {
+                    // Within grace, but a different app took the mic. A drop-
+                    // and-rejoin comes back in the same app; a switch means a
+                    // new meeting.
+                    log("mic holder changed (\(announced ?? "?") → \(holder.watchEntry ?? "?")) — treating as a new meeting")
+                    endAnnounced()
+                    heldSince = now
+                }
+            }
+            idleSince = nil
+
+            if announced == nil {
+                let heldFor = now.timeIntervalSince(heldSince ?? now)
+                if heldFor >= startDelay {
+                    announced = holder.watchEntry
+                    onMicActive?(holder.bundleID)
+                } else {
+                    scheduleEvaluation(after: startDelay - heldFor)
                 }
             }
         } else {
-            pendingStart?.invalidate()
-            pendingStart = nil
-            if announcedBundleID != nil, pendingStop == nil {
-                pendingStop = Timer.scheduledTimer(withTimeInterval: stopGrace, repeats: false) {
-                    [weak self] _ in
-                    MainActor.assumeIsolated { self?.fireIdleIfStillClear() }
+            heldSince = nil
+            if idleSince == nil { idleSince = now }
+            if announced != nil {
+                let idleFor = now.timeIntervalSince(idleSince ?? now)
+                if idleFor >= stopGrace {
+                    endAnnounced()
+                } else {
+                    scheduleEvaluation(after: stopGrace - idleFor)
                 }
             }
         }
     }
 
-    private func fireActiveIfStillHeld() {
-        pendingStart = nil
-        guard announcedBundleID == nil,
-              let proc = active.values.first(where: \.watched)
-        else { return }
-        announcedBundleID = proc.bundleID
-        onMicActive?(proc.bundleID)
+    private func endAnnounced() {
+        announced = nil
+        idleSince = nil
+        onMicIdle?()
     }
 
-    private func fireIdleIfStillClear() {
-        pendingStop = nil
-        guard announcedBundleID != nil, !active.values.contains(where: \.watched) else { return }
-        announcedBundleID = nil
-        onMicIdle?()
+    /// Wake timers only *prompt* an evaluation — they carry no decision, so
+    /// a deferred or coalesced timer costs latency, never correctness. The
+    /// 4s poll backstops them.
+    private func scheduleEvaluation(after delay: TimeInterval) {
+        wakeTimer?.invalidate()
+        let timer = Timer(timeInterval: max(delay, 0.1) + 0.1, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.evaluate() }
+        }
+        timer.tolerance = 0
+        RunLoop.main.add(timer, forMode: .common)
+        wakeTimer = timer
     }
 
     // MARK: - HAL property plumbing
@@ -256,10 +305,10 @@ final class MicActivityMonitor {
     }
 
     /// Prefix match so helper processes (com.google.Chrome.helper, Electron
-    /// renderer bundles) count as their parent app.
-    private func isWatched(_ bundleID: String) -> Bool {
-        guard !bundleID.isEmpty else { return false }
-        return watchlist.contains { bundleID == $0 || bundleID.hasPrefix($0 + ".") }
+    /// renderer bundles) count as their parent app's watchlist entry.
+    private func watchEntry(for bundleID: String) -> String? {
+        guard !bundleID.isEmpty else { return nil }
+        return watchlist.first { bundleID == $0 || bundleID.hasPrefix($0 + ".") }
     }
 
     private func log(_ message: String) {

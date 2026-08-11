@@ -83,6 +83,14 @@ final class AppController {
     private let menuBar: MenuBarController
     private let transcription = TranscriptionCoordinator()
     private let micMonitor: MicActivityMonitor
+    /// App Nap defers a windowless agent's timers by minutes — long enough
+    /// to sleep through an entire between-meetings gap (observed: a 20s stop
+    /// grace that fired only when the next meeting grabbed the mic). Watching
+    /// the mic is this process's whole job; keep it awake.
+    private let napExemption = ProcessInfo.processInfo.beginActivity(
+        options: .userInitiated,
+        reason: "meeting detection timers"
+    )
     private var session: RecordingSession?
     private var ticker: Timer?
     private var autoRecord = Config.autoRecordEnabled()

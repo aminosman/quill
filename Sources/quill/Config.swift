@@ -179,12 +179,12 @@ enum Config {
         autoRecord()?["stop_grace_seconds"] as? Double ?? 20
     }
 
-    /// Seconds of silence on both tracks that mark a meeting boundary during
-    /// an auto session: when sound resumes after a gap this long, the old
-    /// session stops and a fresh one starts. Catches back-to-back meetings
-    /// where the app never releases the mic between calls. 0 disables.
+    /// Opt-in: seconds of silence on both tracks that mark a meeting
+    /// boundary during an auto session — for apps that never release the mic
+    /// between calls. Mic release/re-grab detection is the primary boundary
+    /// signal; silence guessing stays off unless asked for. 0 disables.
     static func autoRecordSplitSilenceSeconds() -> Double {
-        autoRecord()?["split_silence_seconds"] as? Double ?? 45
+        autoRecord()?["split_silence_seconds"] as? Double ?? 0
     }
 
     private static func autoRecord() -> [String: Any]? {

@@ -170,12 +170,15 @@ Optional, at `~/.config/quill/config.json`:
   recording starts (default 3).
 - `auto_record.stop_grace_seconds` — how long the mic must stay free before
   an auto-started recording stops (default 20), so a dropped-and-rejoined
-  call stays one session. Manually started recordings never auto-stop.
-- `auto_record.split_silence_seconds` — back-to-back meetings often share
-  one mic grab (browsers hold the mic between calls), which the idle
-  detector can't see. If both tracks stay silent this long (default 45,
-  0 disables) during an auto session, the next sound is treated as a new
-  meeting: the old recording stops and transcribes, a fresh one starts.
+  call stays one session. The grace only bridges the *same* app: a
+  different watched app grabbing the mic, or a re-grab after a
+  longer-than-grace gap (detected retroactively, immune to timer
+  deferral), starts a new session. Manually started recordings never
+  auto-stop.
+- `auto_record.split_silence_seconds` — opt-in fallback for apps that never
+  release the mic between back-to-back calls: if both tracks stay silent
+  this long during an auto session, the next sound starts a new session.
+  Default 0 (off) — mic release detection is the primary boundary signal.
 - `on_stop` — shell command spawned with the session directory as its
   argument, **after the transcript is written** (or right after recording if
   transcription is disabled). Wire it to whatever comes next: summarization,
