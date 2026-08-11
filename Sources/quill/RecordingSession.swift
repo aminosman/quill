@@ -32,6 +32,12 @@ final class RecordingSession {
         dir = candidate
     }
 
+    /// Most recent moment either track carried real signal — voice-level on
+    /// the mic, any audio on the system track. `startedAt` until first sound.
+    var lastActivityAt: Date {
+        max(mic.activity.value ?? startedAt, system.activity.value ?? startedAt)
+    }
+
     /// Start both tracks. If the mic fails after the system tap started, the
     /// tap is torn down so we never run half a session silently.
     func start() throws {

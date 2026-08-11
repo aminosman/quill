@@ -34,6 +34,10 @@ final class MicRecorder: @unchecked Sendable {
     /// Wall-clock time of the first captured buffer — the track's true start,
     /// used to offset-align the two tracks' transcript timestamps.
     private(set) var firstBufferAt: Date?
+    /// When the mic last heard voice-level signal (well above room noise).
+    let activity = ActivityGauge()
+    /// -26 dBFS: speech into the mic clears this; ambient hum shouldn't.
+    private static let voiceThreshold: Float = 0.05
 
     // Liveness check state (voice-processing path only). Written from the tap
     // callback, read on main when deciding to fall back.
@@ -154,6 +158,7 @@ final class MicRecorder: @unchecked Sendable {
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self, let file = self.file else { return }
             if self.firstBufferAt == nil { self.firstBufferAt = Date() }
+            self.activity.note(peak: ActivityGauge.peak(of: buffer), threshold: Self.voiceThreshold)
 
             if !self.livenessSettled {
                 let frames = Int(buffer.frameLength)
@@ -193,6 +198,7 @@ final class MicRecorder: @unchecked Sendable {
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             guard let self, let file = self.file else { return }
             if self.firstBufferAt == nil { self.firstBufferAt = Date() }
+            self.activity.note(peak: ActivityGauge.peak(of: buffer), threshold: Self.voiceThreshold)
             guard let mono = AVAudioPCMBuffer(
                 pcmFormat: monoFormat,
                 frameCapacity: buffer.frameCapacity

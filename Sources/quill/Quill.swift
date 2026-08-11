@@ -89,6 +89,9 @@ final class AppController {
     /// True while the live session was started by the mic monitor rather than
     /// a click — only those sessions auto-stop when the mic frees up.
     private var sessionAutoStarted = false
+    /// Set once an auto session has been silent (both tracks) longer than the
+    /// split threshold; the next sound is then a meeting boundary.
+    private var splitArmed = false
 
     init(root: URL) {
         self.root = root
@@ -177,6 +180,7 @@ final class AppController {
     }
 
     private func startSession() {
+        splitArmed = false
         do {
             let newSession = try RecordingSession(root: root)
             try newSession.start()
@@ -241,6 +245,35 @@ final class AppController {
             recording: true,
             elapsed: Self.format(Date().timeIntervalSince(session.startedAt))
         )
+        checkSilenceSplit(session)
+    }
+
+    /// Back-to-back meetings often share one mic grab — the app never
+    /// releases it between calls, so the idle detector can't see the
+    /// boundary. Audio can: both tracks quiet past the threshold arms a
+    /// split, and the next sound rotates to a fresh session. Splitting on
+    /// resume (not mid-gap) keeps the silent tail in the old meeting and
+    /// creates nothing when no next meeting comes.
+    private func checkSilenceSplit(_ session: RecordingSession) {
+        guard sessionAutoStarted else { return }
+        let threshold = Config.autoRecordSplitSilenceSeconds()
+        guard threshold > 0 else { return }
+        if Date().timeIntervalSince(session.lastActivityAt) >= threshold {
+            splitArmed = true
+        } else if splitArmed {
+            splitArmed = false
+            FileHandle.standardError.write(Data(
+                "✂ sound after a \(Int(threshold))s+ gap — rotating to a new session\n".utf8
+            ))
+            stopSession()
+            startSession()
+            guard self.session != nil else { return }
+            sessionAutoStarted = true
+            notifyUser(
+                title: "quill — new meeting detected",
+                body: "Recording split — the previous meeting is transcribing."
+            )
+        }
     }
 
     private func openFolder() {

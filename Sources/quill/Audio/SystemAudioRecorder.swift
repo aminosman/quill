@@ -38,6 +38,10 @@ final class SystemAudioRecorder {
     /// Wall-clock time of the first captured buffer — the track's true start,
     /// used to offset-align the two tracks' transcript timestamps.
     private(set) var firstBufferAt: Date?
+    /// When system audio last carried any signal at all — between meetings
+    /// the tap delivers digital silence, so the threshold is near zero.
+    let activity = ActivityGauge()
+    private static let signalThreshold: Float = 0.003
 
     /// Start capturing system audio, encoding AAC into `url` (use a .caf
     /// extension — CAF needs no finalization pass, so a crash mid-meeting
@@ -144,6 +148,9 @@ final class SystemAudioRecorder {
                 bufferListNoCopy: inInputData,
                 deallocator: nil
             ) else { return }
+            self.activity.note(
+                peak: ActivityGauge.peak(of: buffer), threshold: Self.signalThreshold
+            )
             do {
                 try file.write(from: buffer)
             } catch {
