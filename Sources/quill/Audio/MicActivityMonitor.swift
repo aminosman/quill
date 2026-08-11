@@ -118,7 +118,7 @@ final class MicActivityMonitor {
             }
             if let proc = active.removeValue(forKey: id) {
                 log("mic off: \(proc.label) (exited)")
-                if proc.watched { reevaluate() }
+                if proc.watched { evaluate() }
             }
         }
 
