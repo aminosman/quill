@@ -152,6 +152,18 @@ Optional, at `~/.config/quill/config.json`:
 - `meeting_projects` — the meetingable allowlist, managed from the menu;
   absent = every project directory is eligible.
 - `transcription.enabled` — set `false` to just record.
+- `mic_backup_track` — record a second, independent raw mic track. The
+  voice-processing unit can silently deliver *nothing* on some audio routes
+  (it reports enabled, starts without error, never fires a callback), which
+  costs you your whole side of a meeting. The backup runs on its own engine
+  and is promoted over the primary at stop if the primary came up short, so
+  a stall costs nothing. Default: on whenever `mic_voice_processing` is on;
+  set `true` to always double-capture.
+- `dedupe_bleed` — drop mic-track segments that repeat a system-track
+  segment (default on): the other side's voice coming back through your
+  speakers. Only drops when the system copy came *first* — playback reaches
+  the mic later, so a mic-first match is genuinely you and is always kept.
+  This lets reliable raw capture stand in for fragile echo cancellation.
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't
   bleed into the mic track and get transcribed twice as "me". The trade: while
@@ -203,6 +215,23 @@ quill install --uninstall
 - **AVAudioFile** — streaming AAC encode into CAF
 - **FluidAudio / Parakeet** — on-device Core ML transcription
 - **NSStatusItem** — the whole UI
+
+## Never losing a side
+
+Four layers, because a silently half-captured meeting is the one failure
+that can't be redone:
+
+1. **Startup watchdog** — 2.5s after capture begins, if a full second of
+   nonzero audio hasn't arrived, the mic restarts in raw mode.
+2. **Stall watchdog** — 10s without a single buffer mid-meeting restarts
+   capture raw (once per session) and notifies.
+3. **Backup track** — an independent raw engine recording in parallel,
+   promoted automatically if the primary track ends up short (`meta.json`
+   records `mic_recovered_from_backup`).
+4. **Integrity check** — at stop, a track holding less than half the
+   session's duration triggers a "mic track incomplete" notification, and
+   `meta.json` carries `mic_seconds_captured` / `mic_complete`. A thin
+   transcript is never silent about why.
 
 ## Gotchas
 

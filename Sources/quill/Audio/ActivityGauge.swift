@@ -1,6 +1,33 @@
 import AVFoundation
 import Foundation
 
+/// Frame tally for a live tap: how much audio arrived and when the last
+/// buffer landed. Written from render threads, read from main.
+final class FrameCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frames = 0
+    private var last: Date?
+
+    func add(_ count: Int) {
+        lock.lock()
+        frames += count
+        last = Date()
+        lock.unlock()
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return frames
+    }
+
+    var lastAt: Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return last
+    }
+}
+
 /// Tracks when a live track last carried real signal. Written from audio
 /// render threads, read by the main-actor ticker deciding whether a silence
 /// gap marks a meeting boundary — hence the lock.

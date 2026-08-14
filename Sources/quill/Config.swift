@@ -137,6 +137,22 @@ enum Config {
         load()?["mic_voice_processing"] as? Bool ?? false
     }
 
+    /// Record a second, independent raw mic track. The voice-processing unit
+    /// can silently deliver nothing on some routes; the backup is promoted
+    /// over the primary at stop when the primary comes up short, so a stall
+    /// costs nothing. nil (default) means "whenever voice processing is on" —
+    /// that's the fragile path; set true to always double-capture.
+    static func micBackupTrack() -> Bool? {
+        load()?["mic_backup_track"] as? Bool
+    }
+
+    /// Drop mic-track segments that duplicate a system-track segment — the
+    /// other side's voice coming back through your speakers. Lets raw
+    /// capture (reliable) stand in for echo cancellation (fragile).
+    static func dedupeBleed() -> Bool {
+        load()?["dedupe_bleed"] as? Bool ?? true
+    }
+
     /// Meeting apps and browsers whose mic use auto-starts a recording, as
     /// bundle-ID prefixes — helper processes (com.google.Chrome.helper…)
     /// match their parent. com.apple.WebKit.GPU is where Safari's capture

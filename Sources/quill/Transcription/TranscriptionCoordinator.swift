@@ -134,6 +134,13 @@ actor TranscriptionCoordinator {
             }
         }
         merged.sort { $0.start_ms < $1.start_ms }
+        if Config.dedupeBleed() {
+            let before = merged.count
+            merged = Self.withoutBleed(merged)
+            if merged.count < before {
+                log(dir, "dropped \(before - merged.count) bleed segment(s) from the mic track")
+            }
+        }
 
         let transcript = Transcript(
             engine: engine.name,
@@ -143,6 +150,45 @@ actor TranscriptionCoordinator {
         )
         try transcript.write(to: dir)
         log(dir, "done — \(merged.count) segments")
+    }
+
+    /// Speaker playback reaches the mic, so the other side's words land on
+    /// both tracks. The system track is the true source for their voice, so
+    /// drop the mic copy: any "me" segment whose text repeats a nearby
+    /// "them" segment. Conservative on purpose — needs a real textual
+    /// overlap (short utterances like "yeah" are left alone, since both
+    /// people genuinely say them).
+    fileprivate static func withoutBleed(
+        _ segments: [Transcript.Segment]
+    ) -> [Transcript.Segment] {
+        let them = segments.filter { $0.speaker == "them" }
+        guard !them.isEmpty else { return segments }
+        let window = 6000
+
+        return segments.filter { seg in
+            guard seg.speaker == "me" else { return true }
+            let mine = normalizeText(seg.text)
+            guard mine.count >= 15 else { return true }
+            return !them.contains { other in
+                // Direction matters: playback reaches the mic *after* it
+                // reaches the file (measured ≥96ms on real sessions), so a
+                // bleed copy always starts later than its source. When the
+                // mic segment came first it's genuinely you — coincidental
+                // phrase overlap must never delete your own words.
+                guard other.start_ms < seg.start_ms,
+                      seg.start_ms - other.start_ms <= window
+                else { return false }
+                let theirs = normalizeText(other.text)
+                guard theirs.count >= 15 else { return false }
+                return mine.contains(theirs) || theirs.contains(mine)
+            }
+        }
+    }
+
+    private static func normalizeText(_ s: String) -> String {
+        String(s.lowercased().map { $0.isLetter || $0.isNumber ? $0 : " " })
+            .split(separator: " ")
+            .joined(separator: " ")
     }
 
     private func preparedEngine() async throws -> TranscriptionEngine {

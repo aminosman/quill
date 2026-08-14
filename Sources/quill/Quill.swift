@@ -100,6 +100,8 @@ final class AppController {
     /// Set once an auto session has been silent (both tracks) longer than the
     /// split threshold; the next sound is then a meeting boundary.
     private var splitArmed = false
+    /// One mic restart per session — a dead device shouldn't restart forever.
+    private var micRestarted = false
 
     init(root: URL) {
         self.root = root
@@ -189,6 +191,7 @@ final class AppController {
 
     private func startSession() {
         splitArmed = false
+        micRestarted = false
         do {
             let newSession = try RecordingSession(root: root)
             try newSession.start()
@@ -254,6 +257,20 @@ final class AppController {
             elapsed: Self.format(Date().timeIntervalSince(session.startedAt))
         )
         checkSilenceSplit(session)
+        checkMicStall(session)
+    }
+
+    /// The 2.5s startup watchdog can't catch a tap that dies at minute 40.
+    /// If the mic has delivered nothing for 10s while recording, restart it
+    /// raw — once per session, so a genuinely broken device doesn't loop.
+    private func checkMicStall(_ session: RecordingSession) {
+        guard !micRestarted, let idle = session.secondsSinceMicFrame, idle >= 10 else { return }
+        micRestarted = true
+        session.restartMicRaw(reason: "no audio for \(Int(idle))s")
+        notifyUser(
+            title: "quill — mic capture restarted",
+            body: "The microphone stopped delivering audio; recording continues."
+        )
     }
 
     /// Back-to-back meetings often share one mic grab — the app never

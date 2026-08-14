@@ -50,13 +50,60 @@ final class RecordingSession {
         }
     }
 
+    /// Seconds since the mic tap last delivered audio (nil before the first
+    /// buffer) — the stall watchdog's input.
+    var secondsSinceMicFrame: TimeInterval? { mic.secondsSincePrimaryFrame }
+
+    /// Restart mic capture raw mid-session, keeping the same file.
+    func restartMicRaw(reason: String) { mic.restartRaw(reason: reason) }
+
     /// Stop both tracks and write meta.json.
     func stop() {
         mic.stop()
         system.stop()
 
+        // Failover: if the primary mic track came up empty (or far short of
+        // the backup) promote the backup over it, so transcription and every
+        // downstream consumer just find a healthy mic.caf.
+        let micURL = dir.appendingPathComponent("mic.caf")
+        var micRecovered = false
+        if let backupURL = mic.backupURL, mic.backupFrameCount > mic.primaryFrameCount * 2 {
+            do {
+                _ = try FileManager.default.replaceItemAt(micURL, withItemAt: backupURL)
+                micRecovered = true
+                FileHandle.standardError.write(Data(
+                    "mic: primary track was short (\(mic.primaryFrameCount) frames) — promoted backup (\(mic.backupFrameCount) frames)\n"
+                        .utf8
+                ))
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "warning: promoting mic backup failed: \(error)\n".utf8
+                ))
+            }
+        } else if let backupURL = mic.backupURL {
+            try? FileManager.default.removeItem(at: backupURL)
+        }
+
         let ended = Date()
         let iso = ISO8601DateFormatter()
+
+        // Integrity: a track that captured far less audio than the session
+        // lasted is a silent failure — surface it instead of shipping a
+        // half-empty transcript that reads as "they did all the talking".
+        let expected = ended.timeIntervalSince(startedAt)
+        let micSeconds = Double(mic.primaryFrameCount) / 48000
+        let micOK = micRecovered || expected < 5 || micSeconds >= expected * 0.5
+        if !micOK {
+            FileHandle.standardError.write(Data(
+                "warning: mic track only \(Int(micSeconds))s of \(Int(expected))s — your side may be missing\n"
+                    .utf8
+            ))
+            notifyUser(
+                title: "quill — mic track incomplete",
+                body: "\(dir.lastPathComponent): captured \(Int(micSeconds))s of \(Int(expected))s. "
+                    + "Your side of this meeting may be missing."
+            )
+        }
 
         // The tracks don't start on the same buffer; record how far each
         // lags the earliest so transcript timestamps share one clock.
@@ -72,6 +119,13 @@ final class RecordingSession {
             "start_offset_ms": [
                 "mic": Int(micStart.timeIntervalSince(earliest) * 1000),
                 "system": Int(systemStart.timeIntervalSince(earliest) * 1000),
+            ],
+            // Recorded so a thin transcript can always be explained after
+            // the fact, without re-deriving it from file sizes.
+            "tracks": [
+                "mic_seconds_captured": Int(micSeconds),
+                "mic_complete": micOK,
+                "mic_recovered_from_backup": micRecovered,
             ],
         ]
         if let data = try? JSONSerialization.data(

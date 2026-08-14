@@ -31,6 +31,18 @@ final class MicRecorder: @unchecked Sendable {
     private var file: AVAudioFile?
     private var url: URL?
     private(set) var isRecording = false
+    /// Independent raw-capture engine running alongside the voice-processed
+    /// one. Same device, separate graph: when the voice unit delivers
+    /// nothing (a documented failure on some routes — it reports enabled,
+    /// starts without error, and never fires a callback), this track still
+    /// has the whole meeting. Only created when voice processing is on;
+    /// promoted over the primary at stop if the primary came up short.
+    private var backupEngine: AVAudioEngine?
+    private var backupFile: AVAudioFile?
+    private(set) var backupURL: URL?
+    private let backupFrames = FrameCounter()
+    /// Frames delivered to the primary tap, for the stall watchdog.
+    private let primaryFrames = FrameCounter()
     /// Wall-clock time of the first captured buffer — the track's true start,
     /// used to offset-align the two tracks' transcript timestamps.
     private(set) var firstBufferAt: Date?
@@ -53,8 +65,12 @@ final class MicRecorder: @unchecked Sendable {
     func start(writingTo url: URL) throws {
         guard !isRecording else { return }
         self.url = url
-        try attach(voiceProcessing: Config.micVoiceProcessing())
+        let voiceProcessing = Config.micVoiceProcessing()
+        try attach(voiceProcessing: voiceProcessing)
         isRecording = true
+        if Config.micBackupTrack() ?? voiceProcessing {
+            startBackup(alongside: url)
+        }
     }
 
     /// Stop capturing and finalize the file. Idempotent.
@@ -64,6 +80,90 @@ final class MicRecorder: @unchecked Sendable {
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         file = nil
+        if let backupEngine {
+            backupEngine.stop()
+            backupEngine.inputNode.removeTap(onBus: 0)
+            self.backupEngine = nil
+        }
+        backupFile = nil
+    }
+
+    /// Seconds since the primary tap last delivered audio, or nil before the
+    /// first buffer. Drives the mid-session stall watchdog.
+    var secondsSincePrimaryFrame: TimeInterval? {
+        primaryFrames.lastAt.map { Date().timeIntervalSince($0) }
+    }
+
+    var primaryFrameCount: Int { primaryFrames.count }
+    var backupFrameCount: Int { backupFrames.count }
+
+    /// Restart capture raw, discarding the dead primary file. Safe to call
+    /// mid-session; the backup track (if any) keeps running untouched.
+    func restartRaw(reason: String) {
+        guard isRecording else { return }
+        FileHandle.standardError.write(Data("mic: \(reason) — restarting raw\n".utf8))
+        fallBackToRaw()
+    }
+
+    /// Second engine, raw, writing alongside the primary.
+    private func startBackup(alongside primary: URL) {
+        let url = primary
+            .deletingLastPathComponent()
+            .appendingPathComponent("mic-backup.caf")
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let inputFormat = input.outputFormat(forBus: 0)
+        guard
+            let monoFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: inputFormat.sampleRate,
+                channels: 1,
+                interleaved: false
+            ),
+            let converter = AVAudioConverter(from: inputFormat, to: monoFormat)
+        else { return }
+
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: monoFormat.sampleRate,
+            AVNumberOfChannelsKey: 1,
+        ]
+        do {
+            backupFile = try AVAudioFile(
+                forWriting: url,
+                settings: settings,
+                commonFormat: monoFormat.commonFormat,
+                interleaved: monoFormat.isInterleaved
+            )
+        } catch {
+            FileHandle.standardError.write(Data(
+                "warning: mic backup file creation failed: \(error)\n".utf8
+            ))
+            return
+        }
+
+        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) {
+            [weak self] buffer, _ in
+            guard let self, let file = self.backupFile else { return }
+            self.backupFrames.add(Int(buffer.frameLength))
+            guard let mono = AVAudioPCMBuffer(
+                pcmFormat: monoFormat, frameCapacity: buffer.frameCapacity
+            ) else { return }
+            try? converter.convert(to: mono, from: buffer)
+            try? file.write(from: mono)
+        }
+        engine.prepare()
+        do {
+            try engine.start()
+            backupEngine = engine
+            backupURL = url
+            FileHandle.standardError.write(Data("mic: backup raw track → \(url.lastPathComponent)\n".utf8))
+        } catch {
+            FileHandle.standardError.write(Data(
+                "warning: mic backup engine start failed: \(error)\n".utf8
+            ))
+            backupFile = nil
+        }
     }
 
     // MARK: -
@@ -187,6 +287,7 @@ final class MicRecorder: @unchecked Sendable {
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self, let file = self.file else { return }
             if self.firstBufferAt == nil { self.firstBufferAt = Date() }
+            self.primaryFrames.add(Int(buffer.frameLength))
             self.activity.note(peak: ActivityGauge.peak(of: buffer), threshold: Self.voiceThreshold)
 
             if !self.livenessSettled {
@@ -231,6 +332,7 @@ final class MicRecorder: @unchecked Sendable {
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             guard let self, let file = self.file else { return }
             if self.firstBufferAt == nil { self.firstBufferAt = Date() }
+            self.primaryFrames.add(Int(buffer.frameLength))
             self.activity.note(peak: ActivityGauge.peak(of: buffer), threshold: Self.voiceThreshold)
             guard let mono = AVAudioPCMBuffer(
                 pcmFormat: monoFormat,
