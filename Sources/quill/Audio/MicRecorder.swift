@@ -44,6 +44,9 @@ final class MicRecorder: @unchecked Sendable {
     private var livenessFrames = 0
     private var livenessPeak: Float = 0
     private var livenessSettled = false
+    /// Bumped on every (re)attach so stale watchdogs and tap callbacks from
+    /// a torn-down graph can't trigger a second fallback.
+    private var attachGeneration = 0
 
     /// Start capturing the mic, encoding AAC into `url` (use a .caf extension
     /// — CAF needs no finalization pass, so a crash loses nothing written).
@@ -69,6 +72,7 @@ final class MicRecorder: @unchecked Sendable {
     /// once at start, and a second time (voiceProcessing: false) if the
     /// liveness check trips.
     private func attach(voiceProcessing: Bool) throws {
+        attachGeneration += 1
         engine = AVAudioEngine()
         let input = engine.inputNode
 
@@ -146,6 +150,31 @@ final class MicRecorder: @unchecked Sendable {
         let report = "mic: voiceProcessing=\(input.isVoiceProcessingEnabled) "
             + "input=\(input.outputFormat(forBus: 0)) tap=\(monoFormat)\n"
         FileHandle.standardError.write(Data(report.utf8))
+
+        if voice {
+            // Wall-clock watchdog behind the in-callback check. The callback
+            // check only completes if a second's worth of frames arrives —
+            // a voice unit that stalls after a few buffers (observed: 28KB
+            // mic tracks for hour-long meetings, no error anywhere) never
+            // reaches it. Frames are counted here instead of trusted.
+            let generation = attachGeneration
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                self?.verifyVoiceLiveness(generation: generation)
+            }
+        }
+    }
+
+    /// 2.5s in, a healthy voice unit has settled the callback-side check
+    /// (one full second of nonzero frames). Anything else — no callbacks,
+    /// sparse delivery, digital zeros — is dead; restart raw.
+    private func verifyVoiceLiveness(generation: Int) {
+        guard isRecording, generation == attachGeneration else { return }
+        guard !livenessSettled || livenessPeak == 0 else { return }
+        FileHandle.standardError.write(Data(
+            "warning: voice processing stalled (\(livenessFrames) frames in 2.5s, peak \(livenessPeak)) — restarting mic raw\n"
+                .utf8
+        ))
+        fallBackToRaw()
     }
 
     /// Voice-processing path: the unit converts to the mono client format
@@ -171,7 +200,11 @@ final class MicRecorder: @unchecked Sendable {
                 if self.livenessFrames >= checkFrames {
                     self.livenessSettled = true
                     if self.livenessPeak == 0 {
-                        DispatchQueue.main.async { self.fallBackToRaw() }
+                        let generation = self.attachGeneration
+                        DispatchQueue.main.async {
+                            guard generation == self.attachGeneration else { return }
+                            self.fallBackToRaw()
+                        }
                         return
                     }
                 }
