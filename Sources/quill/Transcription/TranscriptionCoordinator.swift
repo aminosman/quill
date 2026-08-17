@@ -147,6 +147,10 @@ actor TranscriptionCoordinator {
 
         if Config.diarizationEnabled() {
             merged = await identifySpeakers(in: merged, dir: dir)
+            // Release per session, not per drain: a resumed queue of several
+            // meetings would otherwise exhaust CoreML's IOSurface pool.
+            await diarizer?.release()
+            diarizer = nil
         }
 
         let transcript = Transcript(
@@ -307,9 +311,14 @@ actor TranscriptionCoordinator {
         guard var transcript = Transcript.read(from: dir) else { return }
         transcript.segments = await identifySpeakers(in: transcript.segments, dir: dir)
         try? transcript.write(to: dir)
-        // Deliberately keeps the diarizer loaded: releasing per session made
-        // a backfill recompile the Core ML models on every recording, which
-        // dominated the run. Call releaseEngines() when the sweep is done.
+        // Keeping the diarizer loaded across sessions was faster but ran the
+        // process out of IOSurface memory partway through a sweep (CoreML
+        // raises an uncatchable NSException, so the whole process dies).
+        // Two diarization passes per session — system plus mic — is enough
+        // GPU-side memory that reclaiming between recordings is the only safe
+        // option; model reload costs seconds, a crash costs the whole run.
+        await diarizer?.release()
+        diarizer = nil
     }
 
     /// Drop loaded models — for one-shot CLI work that's finished with them.
