@@ -63,6 +63,8 @@ struct TranscriptDoc {
     struct Segment: Identifiable {
         let id: Int
         let speaker: String
+        let speakerID: String?
+        let label: String
         let startMs: Int
         let text: String
 
@@ -79,6 +81,18 @@ struct TranscriptDoc {
     let title: String
     let subtitle: String
     let segments: [Segment]
+    /// Distinct diarized voices in this meeting, longest-talking first —
+    /// what the naming UI iterates over.
+    let voices: [Voice]
+
+    struct Voice: Identifiable {
+        let id: String
+        let name: String?
+        let suggestedName: String?
+        let seconds: Double
+
+        var display: String { name ?? SpeakerLibrary.shortLabel(for: id) }
+    }
 
     var meeting: Meeting {
         Meeting(dir: dir, hasTranscript: true, isUnread: false, durationSeconds: nil)
@@ -92,30 +106,41 @@ struct TranscriptDoc {
 
         var engineLine = ""
         var loaded: [Segment] = []
-        if let data = try? Data(contentsOf: dir.appendingPathComponent("transcript.json")),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if let engine = json["engine"] as? String {
-                let model = json["model"] as? String
-                engineLine = "transcribed by \(engine)\(model.map { " (\($0))" } ?? "")"
-            }
-            let raw = json["segments"] as? [[String: Any]] ?? []
-            loaded = raw.enumerated().compactMap { index, seg in
-                guard let text = seg["text"] as? String else { return nil }
+        var voiceSeconds: [String: Double] = [:]
+        let library = SpeakerLibrary.load()
+
+        if let transcript = Transcript.read(from: dir) {
+            engineLine = "transcribed by \(transcript.engine) (\(transcript.model))"
+            loaded = transcript.segments.enumerated().map { index, seg in
+                if let id = seg.speaker_id, id != "me" {
+                    voiceSeconds[id, default: 0] += Double(seg.end_ms - seg.start_ms) / 1000
+                }
                 return Segment(
                     id: index,
-                    speaker: seg["speaker"] as? String ?? "?",
-                    startMs: seg["start_ms"] as? Int ?? 0,
-                    text: text
+                    speaker: seg.speaker,
+                    speakerID: seg.speaker_id,
+                    label: seg.label,
+                    startMs: seg.start_ms,
+                    text: seg.text
                 )
             }
         }
         segments = loaded
+        voices = voiceSeconds
+            .sorted { $0.value > $1.value }
+            .map { id, seconds in
+                Voice(
+                    id: id,
+                    name: library.name(for: id),
+                    suggestedName: library.voice(for: id)?.suggestedName,
+                    seconds: seconds
+                )
+            }
         subtitle = engineLine.isEmpty ? dir.lastPathComponent : engineLine
     }
 }
 
 struct TranscriptView: View {
-    let doc: TranscriptDoc
     let projectsRoot: URL
     let onChange: () -> Void
     let requestClose: () -> Void
@@ -123,6 +148,21 @@ struct TranscriptView: View {
     @State private var filter = ""
     @State private var linked: Set<String> = []
     @State private var confirmingDelete = false
+    @State private var doc: TranscriptDoc
+    @State private var editingVoice: String?
+    @State private var draftName = ""
+
+    init(
+        doc: TranscriptDoc,
+        projectsRoot: URL,
+        onChange: @escaping () -> Void,
+        requestClose: @escaping () -> Void
+    ) {
+        _doc = State(initialValue: doc)
+        self.projectsRoot = projectsRoot
+        self.onChange = onChange
+        self.requestClose = requestClose
+    }
 
     private var filtered: [TranscriptDoc.Segment] {
         filter.isEmpty
@@ -153,10 +193,69 @@ struct TranscriptView: View {
                         .foregroundStyle(.tertiary)
                 }
             }
+            if !doc.voices.isEmpty { speakerBar }
             TextField("Filter transcript…", text: $filter)
                 .textFieldStyle(.roundedBorder)
         }
         .padding()
+    }
+
+    /// Naming a voice here writes it to the speaker library, so every past
+    /// and future meeting with that voice picks the name up.
+    private var speakerBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(doc.voices) { voice in
+                    if editingVoice == voice.id {
+                        HStack(spacing: 4) {
+                            TextField("Name", text: $draftName, onCommit: { commitName(voice) })
+                                .frame(width: 110)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Save") { commitName(voice) }.buttonStyle(.borderless)
+                        }
+                    } else {
+                        Button {
+                            editingVoice = voice.id
+                            draftName = voice.name ?? voice.suggestedName ?? ""
+                        } label: {
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(Self.color(for: voice.id))
+                                    .frame(width: 7, height: 7)
+                                Text(voice.display)
+                                if voice.name == nil, let suggested = voice.suggestedName {
+                                    Text("· \(suggested)?")
+                                        .foregroundStyle(.secondary)
+                                }
+                                Text("\(Int(voice.seconds / 60))m")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Click to name this voice — it's remembered across meetings")
+                    }
+                }
+            }
+        }
+    }
+
+    private func commitName(_ voice: TranscriptDoc.Voice) {
+        var library = SpeakerLibrary.load()
+        library.rename(id: voice.id, to: draftName)
+        library.save()
+        Transcript.relabel(dir: doc.dir, using: library)
+        editingVoice = nil
+        doc = TranscriptDoc(dir: doc.dir)
+        onChange()
+    }
+
+    /// Stable per-voice color from the id, so the same person keeps their
+    /// color across meetings.
+    private static func color(for id: String) -> Color {
+        let palette: [Color] = [.orange, .purple, .teal, .pink, .indigo, .brown, .mint]
+        let hash = id.unicodeScalars.reduce(0) { ($0 * 31 + Int($1.value)) % 9973 }
+        return palette[hash % palette.count]
     }
 
     private var transcript: some View {
@@ -179,10 +278,15 @@ struct TranscriptView: View {
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.tertiary)
                             .frame(width: 52, alignment: .trailing)
-                        Text(seg.speaker)
+                        Text(seg.label)
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(seg.speaker == "me" ? Color.blue : Color.orange)
-                            .frame(width: 40, alignment: .leading)
+                            .foregroundStyle(
+                                seg.speaker == "me"
+                                    ? Color.blue
+                                    : seg.speakerID.map(Self.color(for:)) ?? Color.orange
+                            )
+                            .frame(width: 78, alignment: .leading)
+                            .lineLimit(1)
                         Text(seg.text)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)

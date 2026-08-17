@@ -46,6 +46,43 @@ mic has been free for a grace period, then transcribes as usual. Every app's
 mic use is logged to stderr (`/tmp/quill.err.log` under the LaunchAgent), so
 adding an unlisted app to the watchlist is just reading off its bundle ID.
 
+## Who said what
+
+Two tracks give you `me` vs `them` for free, but a group call needs more:
+the system track carries *every* remote participant. **Diarization** (on by
+default) splits it into individual voices on-device — FluidAudio's Core ML
+pyannote port, segmentation plus 256-dim voice embeddings — while the mic
+track is labeled without a model, since it's you by construction. That
+asymmetry is the point: your own turns are exact, and the model only has to
+separate the remote voices.
+
+Voices are then matched against a **persistent speaker library**
+(`~/.config/quill/speakers.json`) by cosine distance, so the same person is
+the same identity across meetings — "speaker 2" this week and "speaker 1"
+last week collapse into one voice with one name.
+
+Names arrive three ways, cheapest first:
+
+1. **Inferred from the conversation.** [NameDetective] mines self-
+   introductions ("I'm Marilyn"), answered vocatives ("Marilyn, what do you
+   think?" → whoever answers), and acknowledgements ("thanks, Marilyn" →
+   whoever just spoke). Each mention is weak evidence that *accumulates in
+   the library across meetings*, so a name said once last week plus once
+   today clears the bar neither would alone. A candidate is only applied
+   when it beats the runner-up 2:1 — an ambiguous room stays unnamed rather
+   than mislabeled.
+2. **Typed in the viewer.** Click a voice chip, type a name; every
+   transcript that voice appears in is relabeled, including old ones.
+3. **From the CLI** — `quill speakers` lists voices with the names they've
+   been *heard* as, and `--name <id>=<name>` confirms one.
+
+`quill speakers --backfill` re-runs diarization over recordings you already
+have, so the library starts out knowing your regulars instead of learning
+from scratch.
+
+Everything is local: embeddings are voice timbre, stored next to the config,
+and no audio or transcript ever leaves the machine.
+
 ## Meetings in the menu
 
 The menu lists the **last five meetings**. A red dot on the feather (and on
@@ -200,6 +237,9 @@ Optional, at `~/.config/quill/config.json`:
 
 ```sh
 quill                        # run the menu-bar daemon (^C to quit)
+quill speakers               # list known voices and the names they've been heard as
+quill speakers --name <id>=<name>   # confirm a voice's name, relabel its transcripts
+quill speakers --backfill    # diarize existing recordings to seed the voice library
 quill run --out <dir>        # custom recordings root (default ~/Recordings)
 quill doctor                 # check permissions, recordings folder, models
 quill install --launch-at-login

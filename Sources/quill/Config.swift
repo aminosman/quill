@@ -146,6 +146,42 @@ enum Config {
         load()?["mic_backup_track"] as? Bool
     }
 
+    /// Split the system track into individual speakers (default on). The
+    /// system track carries every remote participant, so without this a group
+    /// call collapses into one undifferentiated "them".
+    static func diarizationEnabled() -> Bool {
+        diarization()?["enabled"] as? Bool ?? true
+    }
+
+    /// Cosine distance below which a voice is considered the same person as a
+    /// known one. Lower = stricter (more new identities, fewer mix-ups).
+    static func speakerMatchThreshold() -> Float {
+        Float(diarization()?["match_threshold"] as? Double ?? 0.35)
+    }
+
+    /// Minimum speech a voice needs before it becomes a person in the
+    /// library — below this it's usually crosstalk or a laugh.
+    static func speakerMinSeconds() -> Double {
+        diarization()?["min_speaker_seconds"] as? Double ?? 15
+    }
+
+    /// Infer speaker names from what's said ("I'm Marilyn", "thanks,
+    /// Marilyn") and remember them across meetings. Default on.
+    static func speakerAutoNameEnabled() -> Bool {
+        diarization()?["auto_name"] as? Bool ?? true
+    }
+
+    /// Label for your own track. Defaults to "me" — set a real name and it
+    /// shows up in transcripts instead.
+    static func myName() -> String {
+        guard let name = diarization()?["my_name"] as? String, !name.isEmpty else { return "me" }
+        return name
+    }
+
+    private static func diarization() -> [String: Any]? {
+        load()?["diarization"] as? [String: Any]
+    }
+
     /// Drop mic-track segments that duplicate a system-track segment — the
     /// other side's voice coming back through your speakers. Lets raw
     /// capture (reliable) stand in for echo cancellation (fragile).

@@ -17,6 +17,7 @@ actor TranscriptionCoordinator {
     private var queue: [URL] = []
     private var draining = false
     private var engine: TranscriptionEngine?
+    private var diarizer: DiarizationEngine?
     private var lastFailure: String?
     private var statusHandler: (@Sendable (Status) -> Void)?
 
@@ -95,6 +96,8 @@ actor TranscriptionCoordinator {
         }
         await engine?.release()
         engine = nil
+        await diarizer?.release()
+        diarizer = nil
         publish(lastFailure.map { .failed(session: $0) } ?? .idle)
         draining = false
         // An enqueue that landed between the loop exiting and the release
@@ -142,6 +145,10 @@ actor TranscriptionCoordinator {
             }
         }
 
+        if Config.diarizationEnabled() {
+            merged = await identifySpeakers(in: merged, dir: dir)
+        }
+
         let transcript = Transcript(
             engine: engine.name,
             model: engine.model,
@@ -150,6 +157,153 @@ actor TranscriptionCoordinator {
         )
         try transcript.write(to: dir)
         log(dir, "done — \(merged.count) segments")
+    }
+
+    /// Split the system track into individual voices, match each against the
+    /// persistent speaker library, then mine the words for names. The mic
+    /// track is labeled from config without a model — it's you, always.
+    private func identifySpeakers(
+        in segments: [Transcript.Segment], dir: URL
+    ) async -> [Transcript.Segment] {
+        let systemAudio = dir.appendingPathComponent("system.caf")
+        guard FileManager.default.fileExists(atPath: systemAudio.path) else { return segments }
+
+        var labeled = segments
+        var library = SpeakerLibrary.load()
+        let meeting = dir.lastPathComponent
+
+        // Your own track: no diarization needed.
+        let myName = Config.myName()
+        for i in labeled.indices where labeled[i].speaker == "me" {
+            labeled[i].speaker_id = "me"
+            labeled[i].speaker_name = myName
+        }
+
+        do {
+            let diarizer = try await preparedDiarizer()
+            let turns = try await diarizer.diarize(systemAudio)
+            guard !turns.isEmpty else {
+                log(dir, "diarization found no speech on the system track")
+                return labeled
+            }
+
+            // Aggregate per local speaker *before* touching the library: the
+            // model already clustered the whole meeting, and one pooled
+            // embedding per person is far steadier than dozens of per-turn
+            // ones (matching turn-by-turn minted 22 identities for a
+            // three-person call — every short interjection looked new).
+            let threshold = Config.speakerMatchThreshold()
+            var pooled: [String: (embedding: [Float], seconds: Double)] = [:]
+            for turn in turns where !turn.embedding.isEmpty {
+                if let existing = pooled[turn.localID] {
+                    let total = existing.seconds + turn.seconds
+                    let weightExisting = Float(existing.seconds / total)
+                    let weightNew = Float(turn.seconds / total)
+                    pooled[turn.localID] = (
+                        zip(existing.embedding, turn.embedding).map {
+                            $0 * weightExisting + $1 * weightNew
+                        },
+                        total
+                    )
+                } else {
+                    pooled[turn.localID] = (turn.embedding, turn.seconds)
+                }
+            }
+
+            // A voice with only a moment of speech is usually a crosstalk
+            // artifact; label its turns but never let it create a person.
+            let minSeconds = Config.speakerMinSeconds()
+            var localToLibrary: [String: String] = [:]
+            for (localID, voice) in pooled.sorted(by: { $0.value.seconds > $1.value.seconds }) {
+                guard voice.seconds >= minSeconds else { continue }
+                localToLibrary[localID] = library.resolve(
+                    embedding: voice.embedding,
+                    seconds: voice.seconds,
+                    meeting: meeting,
+                    threshold: threshold
+                )
+            }
+            // Fold the fragments into whichever real voice they sound like.
+            for (localID, voice) in pooled where localToLibrary[localID] == nil {
+                let nearest = localToLibrary
+                    .compactMap { entry -> (String, Float)? in
+                        guard let centroid = library.voice(for: entry.value)?.centroid
+                        else { return nil }
+                        return (
+                            entry.value,
+                            SpeakerLibrary.cosineDistance(voice.embedding, centroid)
+                        )
+                    }
+                    .min { $0.1 < $1.1 }
+                if let nearest, nearest.1 <= threshold * 1.5 {
+                    localToLibrary[localID] = nearest.0
+                }
+            }
+
+            let resolved: [(turn: DiarizationEngine.Turn, id: String)] = turns.compactMap { turn in
+                localToLibrary[turn.localID].map { (turn, $0) }
+            }
+
+            // Attribute each transcript segment to the voice it overlaps most.
+            for i in labeled.indices where labeled[i].speaker == "them" {
+                let start = TimeInterval(labeled[i].start_ms) / 1000
+                let end = TimeInterval(labeled[i].end_ms) / 1000
+                var bestID: String?
+                var bestOverlap: TimeInterval = 0
+                for entry in resolved {
+                    let overlap = min(end, entry.turn.end) - max(start, entry.turn.start)
+                    if overlap > bestOverlap {
+                        bestOverlap = overlap
+                        bestID = entry.id
+                    }
+                }
+                labeled[i].speaker_id = bestID
+                labeled[i].speaker_name = bestID.flatMap { library.name(for: $0) }
+            }
+
+            // Name mining: evidence accumulates in the library, so a name
+            // spoken in any past meeting can settle today's unnamed voice.
+            if Config.speakerAutoNameEnabled() {
+                let evidence = NameDetective.evidence(from: labeled)
+                library.addNameEvidence(evidence, autoName: true)
+                for i in labeled.indices {
+                    if let id = labeled[i].speaker_id, id != "me" {
+                        labeled[i].speaker_name = library.name(for: id)
+                    }
+                }
+            }
+            library.save()
+
+            let voices = Set(labeled.compactMap(\.speaker_id)).subtracting(["me"])
+            let named = voices.compactMap { library.name(for: $0) }
+            log(
+                dir,
+                "diarization: \(voices.count) remote voice(s)"
+                    + (named.isEmpty ? "" : ", identified \(named.joined(separator: ", "))")
+            )
+        } catch {
+            log(dir, "diarization skipped: \(error)")
+        }
+        return labeled
+    }
+
+    /// Re-run diarization and name inference over an already-transcribed
+    /// session, rewriting its transcript. Used by `quill speakers
+    /// --backfill` to seed the voice library from history.
+    func redoSpeakers(in dir: URL) async {
+        guard var transcript = Transcript.read(from: dir) else { return }
+        transcript.segments = await identifySpeakers(in: transcript.segments, dir: dir)
+        try? transcript.write(to: dir)
+        await diarizer?.release()
+        diarizer = nil
+    }
+
+    private func preparedDiarizer() async throws -> DiarizationEngine {
+        if let diarizer { return diarizer }
+        let diarizer = DiarizationEngine()
+        try await diarizer.prepare()
+        self.diarizer = diarizer
+        return diarizer
     }
 
     /// Speaker playback reaches the mic, so the other side's words land on
@@ -165,24 +319,39 @@ actor TranscriptionCoordinator {
         guard !them.isEmpty else { return segments }
         let window = 6000
 
+        // Pre-tokenize once: this is O(me × them) and meetings run to
+        // thousands of segments.
+        let theirTokens = them.map { (seg: $0, tokens: tokenSet($0.text)) }
+
         return segments.filter { seg in
             guard seg.speaker == "me" else { return true }
-            let mine = normalizeText(seg.text)
-            guard mine.count >= 15 else { return true }
-            return !them.contains { other in
+            let mine = tokenSet(seg.text)
+            // Needs enough words to be distinctive; "yeah" and "okay" are
+            // said independently by everyone.
+            guard mine.count >= 3 else { return true }
+            return !theirTokens.contains { other in
                 // Direction matters: playback reaches the mic *after* it
                 // reaches the file (measured ≥96ms on real sessions), so a
                 // bleed copy always starts later than its source. When the
                 // mic segment came first it's genuinely you — coincidental
                 // phrase overlap must never delete your own words.
-                guard other.start_ms < seg.start_ms,
-                      seg.start_ms - other.start_ms <= window
+                guard other.seg.start_ms < seg.start_ms,
+                      seg.start_ms - other.seg.start_ms <= window,
+                      other.tokens.count >= 3
                 else { return false }
-                let theirs = normalizeText(other.text)
-                guard theirs.count >= 15 else { return false }
-                return mine.contains(theirs) || theirs.contains(mine)
+                // Word-overlap, not containment: the two tracks are
+                // transcribed independently, so the same sentence comes back
+                // slightly different ("they've done work" vs "there's done
+                // work") and exact matching misses most real bleed.
+                let shared = mine.intersection(other.tokens).count
+                let smaller = min(mine.count, other.tokens.count)
+                return Double(shared) / Double(smaller) >= 0.7
             }
         }
+    }
+
+    private static func tokenSet(_ text: String) -> Set<String> {
+        Set(normalizeText(text).split(separator: " ").map(String.init))
     }
 
     private static func normalizeText(_ s: String) -> String {
@@ -348,50 +517,5 @@ private struct SessionMeta {
             tracks.append(Track(file: system, speaker: "them", offsetMs: offsets["system"] ?? 0))
         }
         return SessionMeta(tracks: tracks)
-    }
-}
-
-/// Canonical transcript. Property names are the JSON schema — this struct
-/// exists to be serialized.
-private struct Transcript: Codable {
-    struct Segment: Codable {
-        let speaker: String
-        let start_ms: Int
-        let end_ms: Int
-        let text: String
-    }
-
-    let engine: String
-    let model: String
-    let created_at: String
-    let segments: [Segment]
-
-    /// Write transcript.json and render transcript.md. Both writes are atomic
-    /// (temp file + rename), so a partially written transcript never exists on
-    /// disk — resumePending treats presence of transcript.json as "done".
-    func write(to dir: URL) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(self)
-            .write(to: dir.appendingPathComponent("transcript.json"), options: .atomic)
-        try Data(rendered(title: dir.lastPathComponent).utf8)
-            .write(to: dir.appendingPathComponent("transcript.md"), options: .atomic)
-    }
-
-    private func rendered(title: String) -> String {
-        var lines = ["# \(title)", "", "engine: \(engine) (\(model))", ""]
-        for seg in segments {
-            lines.append("**[\(Self.clock(seg.start_ms))] \(seg.speaker):** \(seg.text)")
-            lines.append("")
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    private static func clock(_ ms: Int) -> String {
-        let total = ms / 1000
-        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
-        return h > 0
-            ? String(format: "%d:%02d:%02d", h, m, s)
-            : String(format: "%d:%02d", m, s)
     }
 }
