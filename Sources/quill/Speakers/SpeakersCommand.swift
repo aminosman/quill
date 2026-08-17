@@ -113,8 +113,10 @@ struct Speakers: ParsableCommand {
         Task {
             for dir in sessions {
                 print("  \(dir.lastPathComponent)…")
+                fflush(stdout)
                 await coordinator.redoSpeakers(in: dir)
             }
+            await coordinator.releaseEngines()
             semaphore.signal()
         }
         semaphore.wait()

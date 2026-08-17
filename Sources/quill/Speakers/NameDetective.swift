@@ -28,17 +28,17 @@ enum NameDetective {
         for (index, segment) in segments.enumerated() {
             let text = segment.text
 
-            for name in selfIntroductions(in: text) where appearsMidSentence(name, in: text) {
+            for name in selfIntroductions(in: text) {
                 add(segment.speaker_id, name, 3.0)
             }
 
             // Vocatives point at *another* voice, so they need the
             // neighbouring turns rather than this one.
-            for (name, kind) in addresses(in: text) where appearsMidSentence(name, in: text) {
+            for (name, kind) in addresses(in: text) where !isQuoted(name, in: text) {
                 switch kind {
                 case .question:
                     if let next = nextDifferentVoice(from: index, in: segments) {
-                        add(next, name, 1.5)
+                        add(next, name, 2.0)
                     }
                 case .acknowledgement:
                     if let previous = previousDifferentVoice(from: index, in: segments) {
@@ -69,11 +69,18 @@ enum NameDetective {
             #"\bI am\s+([A-Z][a-z]{2,15})\b"#,
             #"\bmy name['’]?s?\s+(?:is\s+)?([A-Z][a-z]{2,15})\b"#,
             #"\bthis is\s+([A-Z][a-z]{2,15})\b"#,
-            #"\b([A-Z][a-z]{2,15})\s+here\b"#,
         ]
         for pattern in patterns {
             names += captures(of: pattern, in: text)
         }
+        // "NAME here" has no lexical anchor, so a sentence-initial word can
+        // masquerade as a name — that's how "Murderer here is…" once
+        // nominated "Murderer" as a participant. Every other pattern carries
+        // its own trigger words ("I'm", "thanks,", a trailing "?"), so the
+        // capital letter isn't doing the work alone and a leading vocative
+        // like "Caitlin, what do you think?" stays eligible.
+        names += captures(of: #"\b([A-Z][a-z]{2,15})\s+here\b"#, in: text)
+            .filter { appearsMidSentence($0, in: text) }
         return names.filter(isPlausibleName)
     }
 
@@ -94,12 +101,45 @@ enum NameDetective {
         where isPlausibleName(name) {
             found.append((name, .question))
         }
+        // Trailing vocative closing a question: "how's your weekend,
+        // Caitlin?" — whoever answers next is Caitlin. This is the most
+        // common way people actually address each other on a call.
+        for name in captures(of: #"\b[a-z]{2,}[,\s]+([A-Z][a-z]{2,15})\s*\?"#, in: text)
+        where isPlausibleName(name) {
+            found.append((name, .question))
+        }
+        // Trailing vocative closing a statement: "that makes sense, Caitlin."
+        for name in captures(of: #"\b[a-z]{2,},\s+([A-Z][a-z]{2,15})\s*[.!]"#, in: text)
+        where isPlausibleName(name) {
+            found.append((name, .acknowledgement))
+        }
         // "over to you, Marilyn" / "back to you, Marilyn"
         for name in captures(of: #"\b(?:over to you|back to you|to you)[,\s]+([A-Z][a-z]{2,15})\b"#, in: text, caseInsensitive: true)
         where isPlausibleName(name) {
             found.append((name, .question))
         }
         return found
+    }
+
+    /// True when every occurrence of the name is introduced by a quotative —
+    /// "I was like, Caitlin, …", "they say, Caitlin, …". People roleplay
+    /// conversations constantly on sales calls, and those lines address
+    /// nobody in the room.
+    private static func isQuoted(_ name: String, in text: String) -> Bool {
+        let quotatives = ["like,", "like", "saying,", "saying", "say,", "say", "said,", "said"]
+        var search = text.startIndex..<text.endIndex
+        var sawUnquoted = false
+        var sawAny = false
+        while let found = text.range(of: name, range: search) {
+            sawAny = true
+            let prefix = text[text.startIndex..<found.lowerBound]
+                .split(whereSeparator: { $0 == " " || $0 == "\n" })
+                .suffix(2)
+                .map { $0.lowercased() }
+            if !prefix.contains(where: { quotatives.contains($0) }) { sawUnquoted = true }
+            search = found.upperBound..<text.endIndex
+        }
+        return sawAny && !sawUnquoted
     }
 
     /// ASR capitalizes the first word of every sentence, so a sentence-initial
@@ -183,6 +223,12 @@ enum NameDetective {
     /// beyond ~30s the reply is a different exchange.
     private static let neighbourWindowMs = 30_000
 
+    /// "Yeah." / "Okay." answer nothing — the real reply is the next turn
+    /// with actual content.
+    private static func isSubstantial(_ text: String) -> Bool {
+        text.split(whereSeparator: { $0 == " " || $0 == "\n" }).count >= 4
+    }
+
     private static func nextDifferentVoice(
         from index: Int, in segments: [Transcript.Segment]
     ) -> String? {
@@ -190,6 +236,7 @@ enum NameDetective {
         for candidate in segments[(index + 1)...] {
             guard candidate.start_ms - origin.end_ms <= neighbourWindowMs else { return nil }
             guard let id = candidate.speaker_id, !id.isEmpty else { continue }
+            guard isSubstantial(candidate.text) else { continue }
             if id != origin.speaker_id { return id }
         }
         return nil
@@ -202,6 +249,7 @@ enum NameDetective {
         for candidate in segments[..<index].reversed() {
             guard origin.start_ms - candidate.end_ms <= neighbourWindowMs else { return nil }
             guard let id = candidate.speaker_id, !id.isEmpty else { continue }
+            guard isSubstantial(candidate.text) else { continue }
             if id != origin.speaker_id { return id }
         }
         return nil

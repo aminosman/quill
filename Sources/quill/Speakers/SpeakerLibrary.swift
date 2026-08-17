@@ -41,15 +41,18 @@ struct SpeakerLibrary: Codable {
             return top.key
         }
 
-        /// Applied without asking. Deliberately higher than `suggestedName`:
-        /// one regex hit is never enough, so a name needs corroboration —
-        /// a self-introduction plus a later mention, or several addresses.
-        /// A wrong name on a transcript is worse than an unnamed voice.
+        /// Applied without asking. Two ways to qualify: corroborated
+        /// evidence (a self-introduction plus a later mention, or several
+        /// addresses), or a single candidate with nobody competing for this
+        /// voice — one clear "how's your weekend, Caitlin?" and no rival name
+        /// is worth acting on, where the same score split against another
+        /// candidate is not. A wrong name is worse than an unnamed voice, but
+        /// so is never naming anyone.
         var confidentName: String? {
-            guard let suggested = suggestedName,
-                  (nameEvidence[suggested] ?? 0) >= 4.0
-            else { return nil }
-            return suggested
+            guard let suggested = suggestedName else { return nil }
+            let score = nameEvidence[suggested] ?? 0
+            if score >= 4.0 { return suggested }
+            return nameEvidence.count == 1 && score >= 2.0 ? suggested : nil
         }
     }
 
@@ -61,14 +64,38 @@ struct SpeakerLibrary: Codable {
         .appendingPathComponent(".config/quill/speakers.json")
 
     static func load() -> SpeakerLibrary {
-        guard
-            let data = try? Data(contentsOf: path),
-            let library = try? JSONDecoder().decode(SpeakerLibrary.self, from: data)
-        else { return SpeakerLibrary() }
+        guard let data = try? Data(contentsOf: path) else { return SpeakerLibrary() }
+        let decoder = JSONDecoder()
+        // Must mirror save()'s .iso8601: with the default strategy every load
+        // failed to decode and silently returned an empty library, so voices
+        // never matched across meetings and name evidence never accumulated.
+        decoder.dateDecodingStrategy = .iso8601
+        guard let library = try? decoder.decode(SpeakerLibrary.self, from: data) else {
+            FileHandle.standardError.write(Data(
+                "warning: \(path.path) is unreadable — starting a fresh speaker library\n".utf8
+            ))
+            return SpeakerLibrary()
+        }
         return library
     }
 
+    /// Merge with the on-disk library before writing. The daemon and the CLI
+    /// both read-modify-write this file, and a stale snapshot overwriting a
+    /// fresh one lost whole backfills.
     func save() {
+        var merged = Self.load()
+        for voice in voices {
+            if let index = merged.voices.firstIndex(where: { $0.id == voice.id }) {
+                // Ours is the newer observation of this voice.
+                merged.voices[index] = voice
+            } else {
+                merged.voices.append(voice)
+            }
+        }
+        merged.writeToDisk()
+    }
+
+    private func writeToDisk() {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601

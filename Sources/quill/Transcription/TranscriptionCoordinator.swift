@@ -172,7 +172,7 @@ actor TranscriptionCoordinator {
         var library = SpeakerLibrary.load()
         let meeting = dir.lastPathComponent
 
-        // Your own track: no diarization needed.
+        // Your own track: no diarization needed to know it's you.
         let myName = Config.myName()
         for i in labeled.indices where labeled[i].speaker == "me" {
             labeled[i].speaker_id = "me"
@@ -261,6 +261,19 @@ actor TranscriptionCoordinator {
                 labeled[i].speaker_name = bestID.flatMap { library.name(for: $0) }
             }
 
+            // Speaker playback lands on the mic track too, so the mic can be
+            // mostly *other people* — worst case you were muted and every
+            // word on it is bleed. Text matching only catches the lines both
+            // engines transcribed alike; voice identity catches all of it, so
+            // diarize the mic track and drop whatever sounds like a remote
+            // speaker rather than like you.
+            labeled = await dropBleedByVoice(
+                in: labeled,
+                dir: dir,
+                remoteVoices: localToLibrary.values.compactMap { library.voice(for: $0) },
+                threshold: threshold
+            )
+
             // Name mining: evidence accumulates in the library, so a name
             // spoken in any past meeting can settle today's unnamed voice.
             if Config.speakerAutoNameEnabled() {
@@ -294,8 +307,109 @@ actor TranscriptionCoordinator {
         guard var transcript = Transcript.read(from: dir) else { return }
         transcript.segments = await identifySpeakers(in: transcript.segments, dir: dir)
         try? transcript.write(to: dir)
+        // Deliberately keeps the diarizer loaded: releasing per session made
+        // a backfill recompile the Core ML models on every recording, which
+        // dominated the run. Call releaseEngines() when the sweep is done.
+    }
+
+    /// Drop loaded models — for one-shot CLI work that's finished with them.
+    func releaseEngines() async {
+        await engine?.release()
+        engine = nil
         await diarizer?.release()
         diarizer = nil
+    }
+
+    /// Remove mic-track segments whose audio belongs to a remote participant.
+    /// Each mic voice is compared against this meeting's remote voices: the
+    /// ones that match are echo, the leftovers are you. Cheap and decisive
+    /// where text comparison is neither — it needs no agreement between two
+    /// independent transcriptions of the same words.
+    private func dropBleedByVoice(
+        in segments: [Transcript.Segment],
+        dir: URL,
+        remoteVoices: [SpeakerLibrary.Voice],
+        threshold: Float
+    ) async -> [Transcript.Segment] {
+        guard Config.dedupeBleed(), !remoteVoices.isEmpty else { return segments }
+        let micAudio = dir.appendingPathComponent("mic.caf")
+        guard FileManager.default.fileExists(atPath: micAudio.path) else { return segments }
+
+        let turns: [DiarizationEngine.Turn]
+        do {
+            turns = try await preparedDiarizer().diarize(micAudio)
+        } catch {
+            log(dir, "mic diarization skipped: \(error)")
+            return segments
+        }
+        guard !turns.isEmpty else { return segments }
+
+        // Pool per mic voice, then ask each one: do you sound like someone on
+        // the far end?
+        var pooled: [String: (embedding: [Float], seconds: Double)] = [:]
+        for turn in turns where !turn.embedding.isEmpty {
+            if let existing = pooled[turn.localID] {
+                let total = existing.seconds + turn.seconds
+                let weightExisting = Float(existing.seconds / total)
+                let weightNew = Float(turn.seconds / total)
+                pooled[turn.localID] = (
+                    zip(existing.embedding, turn.embedding).map {
+                        $0 * weightExisting + $1 * weightNew
+                    },
+                    total
+                )
+            } else {
+                pooled[turn.localID] = (turn.embedding, turn.seconds)
+            }
+        }
+
+        var echoVoices: Set<String> = []
+        for (localID, voice) in pooled {
+            let nearest = remoteVoices
+                .map { SpeakerLibrary.cosineDistance(voice.embedding, $0.centroid) }
+                .min() ?? .greatestFiniteMagnitude
+            if nearest <= threshold { echoVoices.insert(localID) }
+        }
+        guard !echoVoices.isEmpty else { return segments }
+
+        let echoTurns = turns.filter { echoVoices.contains($0.localID) }
+        let mineTurns = turns.filter { !echoVoices.contains($0.localID) }
+        let micOffset = TimeInterval(SessionMeta.micOffsetMs(in: dir)) / 1000
+
+        var kept: [Transcript.Segment] = []
+        var dropped = 0
+        for segment in segments {
+            guard segment.speaker == "me" else { kept.append(segment); continue }
+            // Diarization timestamps are raw track time; transcript timestamps
+            // carry the track's start offset.
+            let start = TimeInterval(segment.start_ms) / 1000 - micOffset
+            let end = TimeInterval(segment.end_ms) / 1000 - micOffset
+            let echo = Self.overlap(start, end, echoTurns)
+            let mine = Self.overlap(start, end, mineTurns)
+            // Keep anything you plausibly said: only drop when the echo voice
+            // clearly dominates the segment.
+            if echo > mine, echo >= (end - start) * 0.5 {
+                dropped += 1
+            } else {
+                kept.append(segment)
+            }
+        }
+        if dropped > 0 {
+            log(
+                dir,
+                "dropped \(dropped) mic segment(s) matching a remote voice"
+                    + " (\(echoVoices.count) of \(pooled.count) mic voice(s) were echo)"
+            )
+        }
+        return kept
+    }
+
+    private static func overlap(
+        _ start: TimeInterval, _ end: TimeInterval, _ turns: [DiarizationEngine.Turn]
+    ) -> TimeInterval {
+        turns.reduce(0) { total, turn in
+            total + max(0, min(end, turn.end) - max(start, turn.start))
+        }
     }
 
     private func preparedDiarizer() async throws -> DiarizationEngine {
@@ -496,6 +610,18 @@ private struct SessionMeta {
             case .unreadable(let url): return "can't parse \(url.path)"
             }
         }
+    }
+
+    /// Offset already baked into the mic track's transcript timestamps, so
+    /// they can be converted back to raw track time for comparison with
+    /// diarization output.
+    static func micOffsetMs(in dir: URL) -> Int {
+        guard
+            let data = try? Data(contentsOf: dir.appendingPathComponent("meta.json")),
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let offsets = json["start_offset_ms"] as? [String: Int]
+        else { return 0 }
+        return offsets["mic"] ?? 0
     }
 
     static func read(from dir: URL) throws -> SessionMeta {
