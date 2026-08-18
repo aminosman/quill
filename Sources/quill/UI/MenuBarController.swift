@@ -307,8 +307,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         for meeting in meetings {
             let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
             item.tag = Self.meetingTag
-            let filed = projects.filter { $0.isLinked(meeting) }.map(\.name)
-            item.attributedTitle = Self.meetingTitle(meeting, filedIn: filed)
+            item.attributedTitle = Self.meetingTitle(meeting)
             item.toolTip = meeting.summarySnippet
             item.submenu = submenu(for: meeting, projects: projects)
             menu.insertItem(item, at: index)
@@ -320,12 +319,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.insertItem(trailing, at: index)
     }
 
-    /// A row you can act on at a glance: what the meeting was about, when it
-    /// happened, and where it's filed. The date alone is useless when three
-    /// calls share an afternoon.
-    private static func meetingTitle(
-        _ meeting: Meeting, filedIn filed: [String]
-    ) -> NSAttributedString {
+    /// A row you can act on at a glance: what the meeting was about, then
+    /// when. The date alone is useless when three calls share an afternoon,
+    /// but the title has to be clipped or one verbose summary stretches the
+    /// whole menu. Where a meeting is filed lives in the submenu, as a
+    /// checkmark, rather than widening every row.
+    private static func meetingTitle(_ meeting: Meeting) -> NSAttributedString {
         let title = NSMutableAttributedString()
         if meeting.isUnread {
             title.append(NSAttributedString(
@@ -338,7 +337,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
         ]
         if let label = meeting.label {
-            let clipped = label.count > 58 ? String(label.prefix(57)) + "…" : label
+            let clipped = label.count > 50 ? String(label.prefix(49)) + "…" : label
             title.append(NSAttributedString(
                 string: clipped,
                 attributes: [
@@ -353,15 +352,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             if !meeting.hasTranscript {
                 title.append(NSAttributedString(string: "   transcribing…", attributes: secondary))
             }
-        }
-        if !filed.isEmpty {
-            title.append(NSAttributedString(
-                string: "   → \(filed.joined(separator: ", "))",
-                attributes: [
-                    .foregroundColor: NSColor.tertiaryLabelColor,
-                    .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
-                ]
-            ))
         }
         return title
     }

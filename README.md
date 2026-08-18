@@ -155,12 +155,14 @@ writes notes for recordings you already have.
 ## Meetings in the menu
 
 The menu lists the **last five meetings**, each row headed by the title from
-its notes — "Staff Scheduling and Nap Ratio Configuration Discussion" rather
-than a timestamp, because three calls in one afternoon are indistinguishable
-by date. The time and duration follow in grey, the project it's filed into
-trails in lighter grey, and hovering shows the summary's first paragraph. So
-a meeting can be recognized and filed straight from the menu without opening
-anything.
+its notes — "Staff Scheduling and Nap Ratio Configuration" rather than a
+timestamp, because three calls in one afternoon are indistinguishable by
+date. Titles are clipped to 50 characters so one verbose summary can't
+stretch the whole menu; the time and duration follow in grey, and hovering
+shows the summary's first paragraph. So a meeting can be recognized and
+filed straight from the menu without opening anything. Which project a
+meeting is filed into shows as a checkmark inside its submenu rather than
+widening every row.
 
 A red dot on the feather (and on the meeting row) means a transcript finished
 and hasn't been looked at yet; viewing the transcript, opening the notes or
