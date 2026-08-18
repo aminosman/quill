@@ -83,6 +83,53 @@ from scratch.
 Everything is local: embeddings are voice timbre, stored next to the config,
 and no audio or transcript ever leaves the machine.
 
+## Meeting notes (local LLM)
+
+After each transcript, quill can write `summary.md` — title, summary, key
+points, decisions, action items — and pick which project the meeting belongs
+to. It runs entirely on your machine through one of two providers:
+
+| provider | cost | quality |
+|---|---|---|
+| `ollama` | ~5 GB download, ~8 GB RAM for an 8B model | reads a whole meeting in one pass; notes cite real numbers and commitments |
+| `apple` | nothing — built into macOS 26 with Apple Intelligence | 4096-token window, so long meetings are summarized in pieces; noticeably weaker |
+
+Measured on a 30-minute meeting: the 8B model produced notes naming actual
+figures ("49 candidates for Iconic Fox", "66 emails sent Friday") in ~35s;
+the built-in model, given the same time, mixed small talk into the key
+points. Pick by machine, not by principle:
+
+```json
+"llm": {
+  "provider": "auto",
+  "model": "qwen3:8b",
+  "host": "http://127.0.0.1:11434",
+  "context_tokens": 32768,
+  "summarize": true,
+  "classify_projects": true,
+  "name_speakers": true
+}
+```
+
+- `provider` — `auto` (prefer a running Ollama, else Apple's built-in, else
+  skip), `ollama`, `apple`, or `none`.
+- `model` — any pulled Ollama tag. 8B-class is the sweet spot; a 4B model
+  fits a smaller machine, a 14B/30B one gives better notes on a big one.
+- `context_tokens` — how much of a meeting the model reads at once.
+  Whatever doesn't fit is summarized in pieces and stitched.
+- `summarize` / `classify_projects` / `name_speakers` — turn individual
+  features off.
+
+`quill doctor` reports which model would actually be used, and
+`quill notes` writes notes for recordings you already have.
+
+Setup for the recommended path:
+
+```sh
+brew install ollama && ollama serve
+ollama pull qwen3:8b
+```
+
 ## Meetings in the menu
 
 The menu lists the **last five meetings**. A red dot on the feather (and on
@@ -240,6 +287,8 @@ quill                        # run the menu-bar daemon (^C to quit)
 quill speakers               # list known voices and the names they've been heard as
 quill speakers --name <id>=<name>   # confirm a voice's name, relabel its transcripts
 quill speakers --backfill    # diarize existing recordings to seed the voice library
+quill notes                  # write summary.md for transcribed recordings
+quill notes --force          # rewrite notes that already exist
 quill run --out <dir>        # custom recordings root (default ~/Recordings)
 quill doctor                 # check permissions, recordings folder, models
 quill install --launch-at-login

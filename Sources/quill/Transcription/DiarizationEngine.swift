@@ -54,14 +54,41 @@ actor DiarizationEngine {
         let samples = try Self.monoSamples16k(from: audio)
         guard samples.count > 16_000 else { return [] }
 
-        let result = try manager.performCompleteDiarization(samples, sampleRate: 16_000)
-        let ordered = result.segments.sorted { $0.startTimeSeconds < $1.startTimeSeconds }
+        // Diarize in windows rather than one 90-minute call. FluidAudio's
+        // embedding extractor holds a CoreML buffer per 10s chunk, and across
+        // hundreds of chunks that exhausts the IOSurface pool — which CoreML
+        // reports as an uncatchable NSException, killing the process. An
+        // autorelease pool per window bounds the high-water mark; the
+        // per-window speaker numbering is reconciled by the caller, which
+        // already pools embeddings and matches them to the speaker library.
+        let windowSeconds = 600
+        let windowSamples = windowSeconds * 16_000
+        var collected: [TimedSpeakerSegment] = []
+        var offset = 0
+        while offset < samples.count {
+            let end = min(offset + windowSamples, samples.count)
+            // A sliver of trailing audio yields nothing but costs a model run.
+            if end - offset < 16_000 { break }
+            let window = Array(samples[offset..<end])
+            let startTime = TimeInterval(offset) / 16_000
+            try autoreleasepool {
+                let partial = try manager.performCompleteDiarization(
+                    window, sampleRate: 16_000, atTime: startTime
+                )
+                collected.append(contentsOf: partial.segments)
+            }
+            offset = end
+        }
+        let ordered = collected.sorted { $0.startTimeSeconds < $1.startTimeSeconds }
 
         var turns: [Turn] = []
         var currentID: String?
         for segment in ordered {
             let turn = Turn(
-                localID: segment.speakerId,
+                // Scope the model's per-call speaker number to its window so
+                // "speaker 1" in minute 5 and minute 15 stay distinct; the
+                // caller re-unifies them by embedding.
+                localID: "\(Int(segment.startTimeSeconds) / windowSeconds)-\(segment.speakerId)",
                 start: TimeInterval(segment.startTimeSeconds),
                 end: TimeInterval(segment.endTimeSeconds),
                 embedding: segment.embedding,

@@ -21,7 +21,38 @@ enum DoctorReport {
             checkSystemAudio(),
             checkRecordingsRoot(recordingsRoot),
             checkTranscription(),
+            checkLanguageModel(),
         ]
+    }
+
+    /// Notes are optional, so a missing model is a warning with a recipe —
+    /// never a failure. Reports what would actually be used, not what's
+    /// configured, since "auto" falls back.
+    static func checkLanguageModel() -> Check {
+        guard Config.llmSummarize() || Config.llmClassifyProjects() else {
+            return Check(name: "local model", status: .ok, remediation: nil)
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var found: String?
+        Task {
+            found = await LLMFactory.make()?.name
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 8)
+
+        if let found {
+            return Check(name: "local model", status: .ok, remediation: "using \(found)")
+        }
+        let provider = Config.llmProvider()
+        if provider == "none" {
+            return Check(name: "local model", status: .ok, remediation: "disabled in config")
+        }
+        return Check(
+            name: "local model",
+            status: .warn("none reachable — meeting notes will be skipped"),
+            remediation: "brew install ollama && ollama serve && ollama pull \(Config.llmModel())"
+                + " — or set llm.provider to \"apple\" to use the built-in model on macOS 26"
+        )
     }
 
     static func checkMicrophone() -> Check {

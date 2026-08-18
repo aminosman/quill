@@ -182,6 +182,72 @@ enum Config {
         load()?["diarization"] as? [String: Any]
     }
 
+    // MARK: - Local language model
+    //
+    // Meeting notes, project filing and speaker-name proposals can all run
+    // through a local LLM. Machines differ enormously, so this is a dial
+    // rather than a switch:
+    //
+    //   "llm": {
+    //     "provider": "auto",        // auto | ollama | apple | none
+    //     "model": "qwen3:8b",       // any pulled Ollama model
+    //     "host": "http://127.0.0.1:11434",
+    //     "context_tokens": 32768,
+    //     "timeout_seconds": 600,
+    //     "summarize": true,
+    //     "classify_projects": true,
+    //     "name_speakers": true
+    //   }
+    //
+    // "auto" prefers a running Ollama (measurably better notes) and falls
+    // back to Apple's built-in model, then to no LLM at all. On a small
+    // machine, "provider": "apple" costs no download and no extra RAM;
+    // "none" turns the whole thing off.
+
+    /// auto | ollama | apple | none
+    static func llmProvider() -> String {
+        (llm()?["provider"] as? String)?.lowercased() ?? "auto"
+    }
+
+    /// Ollama model tag. 8B-class models are the sweet spot: they read a
+    /// whole transcript in one pass and still fit comfortably in 16 GB.
+    static func llmModel() -> String {
+        llm()?["model"] as? String ?? "qwen3:8b"
+    }
+
+    static func llmHost() -> String {
+        llm()?["host"] as? String ?? "http://127.0.0.1:11434"
+    }
+
+    /// Context window to request. Bigger reads more of a long meeting at
+    /// once but costs RAM; quill chunks whatever doesn't fit.
+    static func llmContextTokens() -> Int {
+        llm()?["context_tokens"] as? Int ?? 32_768
+    }
+
+    static func llmTimeoutSeconds() -> Double {
+        llm()?["timeout_seconds"] as? Double ?? 600
+    }
+
+    /// Write summary.md (title, summary, key points, decisions, actions).
+    static func llmSummarize() -> Bool {
+        llm()?["summarize"] as? Bool ?? true
+    }
+
+    /// Let the model pick the project instead of counting name mentions.
+    static func llmClassifyProjects() -> Bool {
+        llm()?["classify_projects"] as? Bool ?? true
+    }
+
+    /// Let the model propose speaker names from the conversation.
+    static func llmNameSpeakers() -> Bool {
+        llm()?["name_speakers"] as? Bool ?? true
+    }
+
+    private static func llm() -> [String: Any]? {
+        load()?["llm"] as? [String: Any]
+    }
+
     /// Drop mic-track segments that duplicate a system-track segment — the
     /// other side's voice coming back through your speakers. Lets raw
     /// capture (reliable) stand in for echo cancellation (fragile).

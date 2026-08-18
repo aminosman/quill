@@ -230,12 +230,42 @@ struct Project {
         return count
     }
 
+    /// One-line description for the LLM catalog: the README's first real
+    /// line, else the notable subdirectories. Bare codenames like "mars" tell
+    /// a model nothing — with descriptions, classification actually works.
+    var description: String {
+        let readme = dir.appendingPathComponent("README.md")
+        if let text = try? String(contentsOf: readme, encoding: .utf8) {
+            for line in text.split(separator: "\n") {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.isEmpty, !trimmed.hasPrefix("#"), !trimmed.hasPrefix("!"),
+                      !trimmed.hasPrefix("[")
+                else { continue }
+                return String(trimmed.prefix(160))
+            }
+        }
+        let children = (try? FileManager.default.contentsOfDirectory(atPath: dir.path))?
+            .filter { !$0.hasPrefix(".") && !$0.contains(".") }
+            .prefix(6)
+            .joined(separator: ", ")
+        return children.map { "contains: \($0)" } ?? ""
+    }
+
     /// Drop every project's link to a meeting — for when the recording
     /// itself is deleted, so no dangling symlinks stay behind.
     static func removeAllLinks(to meeting: Meeting, in root: URL) {
         for project in all(in: root) where project.isLinked(meeting) {
             project.toggleLink(meeting)
         }
+    }
+
+    /// Link a meeting to the named project if it exists and is meetingable.
+    static func link(meeting: Meeting, toProjectNamed name: String, root: URL) -> String? {
+        guard let project = enabled(in: root).first(where: {
+            $0.name.compare(name, options: .caseInsensitive) == .orderedSame
+        }) else { return nil }
+        if project.isLinked(meeting) { return project.name }
+        return project.toggleLink(meeting) ? project.name : nil
     }
 
     /// Link or unlink the meeting. Returns whether it is linked afterwards.

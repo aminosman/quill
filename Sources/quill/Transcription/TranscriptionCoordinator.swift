@@ -18,6 +18,8 @@ actor TranscriptionCoordinator {
     private var draining = false
     private var engine: TranscriptionEngine?
     private var diarizer: DiarizationEngine?
+    /// Project the model picked while writing notes, consumed by filing.
+    private var llmProject: [URL: String?] = [:]
     private var lastFailure: String?
     private var statusHandler: (@Sendable (Status) -> Void)?
 
@@ -161,6 +163,31 @@ actor TranscriptionCoordinator {
         )
         try transcript.write(to: dir)
         log(dir, "done — \(merged.count) segments")
+        await writeNotes(for: dir, transcript: transcript)
+    }
+
+    /// Ask the local model for notes. Entirely optional: no model configured
+    /// or reachable means the transcript is still the deliverable.
+    private func writeNotes(for dir: URL, transcript: Transcript) async {
+        guard Config.llmSummarize(), !transcript.segments.isEmpty else { return }
+        guard let engine = await LLMFactory.make() else { return }
+        let projects = Project.enabled(in: Config.projectsDir())
+            .map { (name: $0.name, description: $0.description) }
+        log(dir, "writing notes (\(engine.name))")
+        let started = Date()
+        guard let notes = await MeetingNotes.generate(
+            transcript: transcript, projects: projects, using: engine
+        ) else {
+            log(dir, "notes unavailable — model returned nothing usable")
+            return
+        }
+        notes.write(to: dir, engineName: engine.name)
+        log(
+            dir,
+            "notes written in \(Int(Date().timeIntervalSince(started)))s"
+                + (notes.project.map { " · project: \($0)" } ?? "")
+        )
+        llmProject[dir] = notes.project
     }
 
     /// Split the system track into individual voices, match each against the
@@ -505,6 +532,21 @@ actor TranscriptionCoordinator {
         guard Config.autoFileEnabled() else {
             notifyUser(title: "quill — transcript ready", body: name)
             return
+        }
+        // The model reads the whole meeting; the keyword matcher only counts
+        // names, so it can't file a meeting where nobody says the codename.
+        if Config.llmClassifyProjects(), let picked = llmProject[dir] ?? nil {
+            let meeting = Meeting(
+                dir: dir, hasTranscript: true, isUnread: true, durationSeconds: nil
+            )
+            if let filed = Project.link(
+                meeting: meeting, toProjectNamed: picked, root: Config.projectsDir()
+            ) {
+                meeting.markRead()
+                notifyUser(title: "quill — transcript filed", body: "\(name) → \(filed)")
+                llmProject[dir] = nil
+                return
+            }
         }
         let result = Project.autoFile(dir, projectsRoot: Config.projectsDir())
         if let filed = result.filed {
