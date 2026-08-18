@@ -296,6 +296,11 @@ Optional, at `~/.config/quill/config.json`:
   trigger a recording.
 - `auto_record.min_mic_seconds` — how long the mic must be held before
   recording starts (default 3).
+- `auto_record.max_silence_minutes` — backstop for a recording nobody
+  stopped: if both tracks stay silent this long (default 15, 0 disables),
+  the session ends regardless of what the mic-ownership monitor thinks.
+  Mic-release detection is the primary signal, but it depends on the system
+  reporting a release; audio silence needs no cooperation from anyone.
 - `auto_record.stop_grace_seconds` — how long the mic must stay free before
   an auto-started recording stops (default 20), so a dropped-and-rejoined
   call stays one session. The grace only bridges the *same* app: a

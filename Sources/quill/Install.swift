@@ -72,13 +72,17 @@ struct Install: ParsableCommand {
         )
         try data.write(to: url, options: .atomic)
 
-        // Best-effort bootstrap; ignore failure if already loaded.
+        // bootout fails while the daemon is busy, which then fails bootstrap
+        // and silently leaves the *previous* build running — an install that
+        // reports success but changes nothing. kickstart -k is the reliable
+        // restart, so it's the one that matters here.
         _ = runLaunchctl(["bootout", "gui/\(uid())", url.path])
-        let result = runLaunchctl(["bootstrap", "gui/\(uid())", url.path])
-        if result.status != 0 {
-            FileHandle.standardError.write(Data(
-                "warning: launchctl bootstrap exited \(result.status):\n\(result.stderr)\n".utf8
-            ))
+        _ = runLaunchctl(["bootstrap", "gui/\(uid())", url.path])
+        let restart = runLaunchctl(["kickstart", "-k", "gui/\(uid())/\(Self.label)"])
+        if restart.status != 0 {
+            let warning = "warning: couldn't restart the agent (\(restart.status)): "
+                + "\(restart.stderr) — the new build starts at next login\n"
+            FileHandle.standardError.write(Data(warning.utf8))
         }
 
         print("✓ launch-at-login installed")

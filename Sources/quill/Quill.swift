@@ -258,6 +258,29 @@ final class AppController {
         )
         checkSilenceSplit(session)
         checkMicStall(session)
+        checkAbandoned(session)
+    }
+
+    /// Stop a recording everyone has walked away from. The mic monitor is
+    /// the primary signal, but it depends on the HAL reporting a release we
+    /// might miss; audio silence is independent evidence and needs no
+    /// cooperation from anyone. Observed failure this guards: a session that
+    /// ran four hours after the call ended.
+    private func checkAbandoned(_ session: RecordingSession) {
+        guard sessionAutoStarted else { return }
+        let limit = Config.autoRecordMaxSilenceMinutes() * 60
+        guard limit > 0 else { return }
+        let silent = Date().timeIntervalSince(session.lastActivityAt)
+        guard silent >= limit else { return }
+        FileHandle.standardError.write(Data(
+            "⏹ no audio for \(Int(silent / 60))m — stopping abandoned recording\n".utf8
+        ))
+        sessionAutoStarted = false
+        stopSession()
+        notifyUser(
+            title: "quill — recording stopped",
+            body: "No audio for \(Int(silent / 60)) minutes, so the meeting looked over."
+        )
     }
 
     /// The 2.5s startup watchdog can't catch a tap that dies at minute 40.

@@ -313,6 +313,16 @@ enum Config {
         autoRecord()?["stop_grace_seconds"] as? Double ?? 20
     }
 
+    /// Backstop for an auto-started recording that nobody stopped: if both
+    /// tracks stay silent this long, the meeting is over regardless of what
+    /// the mic-ownership monitor believes. Guards against an app that never
+    /// releases the mic *and* against a missed idle event — a recording that
+    /// runs for hours after everyone hung up is the worst failure mode,
+    /// since it buries the real meeting in silence. 0 disables.
+    static func autoRecordMaxSilenceMinutes() -> Double {
+        autoRecord()?["max_silence_minutes"] as? Double ?? 15
+    }
+
     /// Opt-in: seconds of silence on both tracks that mark a meeting
     /// boundary during an auto session — for apps that never release the mic
     /// between calls. Mic release/re-grab detection is the primary boundary
