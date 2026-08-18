@@ -154,9 +154,17 @@ writes notes for recordings you already have.
 
 ## Meetings in the menu
 
-The menu lists the **last five meetings**. A red dot on the feather (and on
-the meeting row) means a transcript finished and hasn't been looked at yet;
-viewing the transcript, opening the folder, or filing the meeting clears it.
+The menu lists the **last five meetings**, each row headed by the title from
+its notes — "Staff Scheduling and Nap Ratio Configuration Discussion" rather
+than a timestamp, because three calls in one afternoon are indistinguishable
+by date. The time and duration follow in grey, the project it's filed into
+trails in lighter grey, and hovering shows the summary's first paragraph. So
+a meeting can be recognized and filed straight from the menu without opening
+anything.
+
+A red dot on the feather (and on the meeting row) means a transcript finished
+and hasn't been looked at yet; viewing the transcript, opening the notes or
+folder, or filing the meeting clears it.
 
 **View transcript** opens a viewer window: the conversation as a
 speaker-tagged, timestamped list (me in blue, them in orange), with a filter

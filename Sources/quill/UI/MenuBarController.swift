@@ -307,7 +307,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         for meeting in meetings {
             let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
             item.tag = Self.meetingTag
-            item.attributedTitle = Self.meetingTitle(meeting)
+            let filed = projects.filter { $0.isLinked(meeting) }.map(\.name)
+            item.attributedTitle = Self.meetingTitle(meeting, filedIn: filed)
+            item.toolTip = meeting.summarySnippet
             item.submenu = submenu(for: meeting, projects: projects)
             menu.insertItem(item, at: index)
             index += 1
@@ -318,18 +320,47 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.insertItem(trailing, at: index)
     }
 
-    private static func meetingTitle(_ meeting: Meeting) -> NSAttributedString {
+    /// A row you can act on at a glance: what the meeting was about, when it
+    /// happened, and where it's filed. The date alone is useless when three
+    /// calls share an afternoon.
+    private static func meetingTitle(
+        _ meeting: Meeting, filedIn filed: [String]
+    ) -> NSAttributedString {
         let title = NSMutableAttributedString()
         if meeting.isUnread {
             title.append(NSAttributedString(
                 string: "● ", attributes: [.foregroundColor: NSColor.systemRed]
             ))
         }
-        title.append(NSAttributedString(string: meeting.title))
-        if !meeting.hasTranscript {
+
+        let secondary: [NSAttributedString.Key: Any] = [
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+        ]
+        if let label = meeting.label {
+            let clipped = label.count > 58 ? String(label.prefix(57)) + "…" : label
             title.append(NSAttributedString(
-                string: "  (no transcript yet)",
-                attributes: [.foregroundColor: NSColor.secondaryLabelColor]
+                string: clipped,
+                attributes: [
+                    .font: NSFont.systemFont(
+                        ofSize: NSFont.systemFontSize, weight: .medium)
+                ]
+            ))
+            title.append(NSAttributedString(string: "   \(meeting.title)", attributes: secondary))
+        } else {
+            // No notes yet — the timestamp is all there is.
+            title.append(NSAttributedString(string: meeting.title))
+            if !meeting.hasTranscript {
+                title.append(NSAttributedString(string: "   transcribing…", attributes: secondary))
+            }
+        }
+        if !filed.isEmpty {
+            title.append(NSAttributedString(
+                string: "   → \(filed.joined(separator: ", "))",
+                attributes: [
+                    .foregroundColor: NSColor.tertiaryLabelColor,
+                    .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                ]
             ))
         }
         return title
@@ -348,6 +379,19 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         open.isEnabled = meeting.hasTranscript
         open.representedObject = meeting.dir
         sub.addItem(open)
+
+        if FileManager.default.fileExists(
+            atPath: meeting.dir.appendingPathComponent("summary.md").path
+        ) {
+            let notes = NSMenuItem(
+                title: "Open notes",
+                action: #selector(openNotesClicked(_:)),
+                keyEquivalent: ""
+            )
+            notes.target = self
+            notes.representedObject = meeting.dir
+            sub.addItem(notes)
+        }
 
         let folder = NSMenuItem(
             title: "Open folder",
@@ -414,6 +458,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         TranscriptViewer.show(meetingDir: dir, projectsRoot: projectsRoot) { [weak self] in
             self?.refreshUnread()
         }
+        refreshUnread()
+    }
+
+    @objc private func openNotesClicked(_ sender: NSMenuItem) {
+        guard let dir = sender.representedObject as? URL else { return }
+        Self.meeting(at: dir).markRead()
+        NSWorkspace.shared.open(dir.appendingPathComponent("summary.md"))
         refreshUnread()
     }
 

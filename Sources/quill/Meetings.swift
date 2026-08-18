@@ -11,6 +11,41 @@ struct Meeting {
 
     var name: String { dir.lastPathComponent }
 
+    /// Headline from summary.md — what the meeting was actually about, so the
+    /// menu can be scanned without opening anything. nil before notes exist.
+    var label: String? {
+        guard let text = try? String(
+            contentsOf: dir.appendingPathComponent("summary.md"), encoding: .utf8
+        ) else { return nil }
+        for line in text.split(separator: "\n") where line.hasPrefix("# ") {
+            var title = line.dropFirst(2).trimmingCharacters(in: .whitespaces)
+            // The model likes to announce itself; the menu already knows
+            // these are meeting notes.
+            for noise in ["Meeting Notes - ", "Meeting Notes: ", "Meeting Notes"] {
+                if title.hasPrefix(noise) { title = String(title.dropFirst(noise.count)) }
+            }
+            title = title.trimmingCharacters(in: CharacterSet(charactersIn: " -–:"))
+            return title.isEmpty ? nil : title
+        }
+        return nil
+    }
+
+    /// First paragraph of the summary, shown on hover — enough to decide
+    /// where a meeting belongs without opening it.
+    var summarySnippet: String? {
+        guard let text = try? String(
+            contentsOf: dir.appendingPathComponent("summary.md"), encoding: .utf8
+        ) else { return nil }
+        for paragraph in text.split(separator: "\n") {
+            let line = paragraph.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty, !line.hasPrefix("#"), !line.hasPrefix("-"),
+                  !line.hasPrefix("<sub>"), !line.hasPrefix("filed under")
+            else { continue }
+            return String(line.prefix(420))
+        }
+        return nil
+    }
+
     private static let unreadMarker = ".unread"
 
     /// Finished sessions (meta.json exists), newest first. Folder names sort
