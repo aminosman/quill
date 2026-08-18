@@ -244,6 +244,22 @@ enum Config {
         llm()?["name_speakers"] as? Bool ?? true
     }
 
+    /// Persist a model choice made in the menu or via `quill models`.
+    static func setLLM(provider: String, model: String?) {
+        var json = load() ?? [:]
+        var llm = json["llm"] as? [String: Any] ?? [:]
+        llm["provider"] = provider
+        if let model { llm["model"] = model }
+        json["llm"] = llm
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: json, options: [.prettyPrinted, .sortedKeys]
+        ) else { return }
+        try? FileManager.default.createDirectory(
+            at: path.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try? data.write(to: path, options: .atomic)
+    }
+
     private static func llm() -> [String: Any]? {
         load()?["llm"] as? [String: Any]
     }

@@ -22,6 +22,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let autoRecordItem: NSMenuItem
     private let meetingsAnchor: NSMenuItem
     private var meetingableItem: NSMenuItem!
+    private var notesModelItem: NSMenuItem!
+    /// Set while a download runs so the menu can show progress instead of a
+    /// stale list, and so a second click can't start a parallel download.
+    private var modelStatus: String?
     private var recording = false
     private var elapsedText: String?
     private var unread = false
@@ -86,6 +90,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             keyEquivalent: ""
         )
         menu.addItem(chooseProjects)
+
+        notesModelItem = NSMenuItem(title: "Meeting notes", action: nil, keyEquivalent: "")
+        notesModelItem.submenu = NSMenu()
+        notesModelItem.submenu?.autoenablesItems = false
+        menu.addItem(notesModelItem)
 
         meetingableItem = NSMenuItem(title: "Meetingable projects", action: nil, keyEquivalent: "")
         meetingableItem.submenu = NSMenu()
@@ -213,7 +222,50 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         guard menu === self.menu else { return }
         rebuildMeetings()
         rebuildMeetingable()
+        rebuildModels()
         refreshUnread()
+    }
+
+    /// Model picker: choosing an entry downloads and configures it, so the
+    /// only step a user takes is deciding how much disk and memory to spend.
+    private func rebuildModels() {
+        guard let sub = notesModelItem.submenu else { return }
+        sub.removeAllItems()
+
+        if let modelStatus {
+            let item = NSMenuItem(title: modelStatus, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            sub.addItem(item)
+            return
+        }
+
+        let active = ModelCatalog.active
+        let recommended = ModelCatalog.recommended
+        let installed = Set(
+            ModelInstaller.ollamaPath().map(ModelInstaller.installedModels(ollama:)) ?? []
+        )
+        for option in ModelCatalog.options {
+            var detail: [String] = []
+            if !option.isOff, !option.isBuiltIn {
+                detail.append(installed.contains(option.id) ? "installed" : option.sizeText)
+            }
+            if option.id == recommended.id { detail.append("recommended") }
+            if !option.isOff, !option.isBuiltIn,
+               option.requiresMemoryGB > ModelCatalog.memoryGB {
+                detail.append("needs \(Int(option.requiresMemoryGB)) GB")
+            }
+            let title = detail.isEmpty
+                ? option.label
+                : "\(option.label)  ·  \(detail.joined(separator: ", "))"
+            let item = NSMenuItem(
+                title: title, action: #selector(modelClicked(_:)), keyEquivalent: ""
+            )
+            item.target = self
+            item.state = option.id == active.id ? .on : .off
+            item.representedObject = option.id
+            item.toolTip = option.blurb
+            sub.addItem(item)
+        }
     }
 
     /// Checklist of every project directory; checked = meetingable. Only
@@ -370,6 +422,40 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         Self.meeting(at: dir).markRead()
         NSWorkspace.shared.open(dir)
         refreshUnread()
+    }
+
+    @objc private func modelClicked(_ sender: NSMenuItem) {
+        guard modelStatus == nil,
+              let id = sender.representedObject as? String,
+              let option = ModelCatalog.option(id: id),
+              option.id != ModelCatalog.active.id
+        else { return }
+
+        modelStatus = "Setting up \(option.label)…"
+        if !option.isOff, !option.isBuiltIn {
+            notifyUser(
+                title: "quill — setting up \(option.label)",
+                body: "Downloading \(option.sizeText). Notes will use it when it's ready."
+            )
+        }
+        DispatchQueue.global(qos: .utility).async {
+            ModelInstaller.activate(option) { progress in
+                Task { @MainActor [weak self] in
+                    switch progress {
+                    case .message(let text):
+                        self?.modelStatus = text
+                    case .downloading(let percent):
+                        self?.modelStatus = "Downloading \(option.label)… \(percent)%"
+                    case .done(let text):
+                        self?.modelStatus = nil
+                        notifyUser(title: "quill — model ready", body: text)
+                    case .failed(let text):
+                        self?.modelStatus = nil
+                        notifyUser(title: "quill — model setup failed", body: text)
+                    }
+                }
+            }
+        }
     }
 
     @objc private func meetingableClicked(_ sender: NSMenuItem) {

@@ -120,15 +120,37 @@ points. Pick by machine, not by principle:
 - `summarize` / `classify_projects` / `name_speakers` — turn individual
   features off.
 
-`quill doctor` reports which model would actually be used, and
-`quill notes` writes notes for recordings you already have.
+### Picking a model
 
-Setup for the recommended path:
+You do not set any of this up by hand. **Menu bar → Meeting notes** lists the
+options with their download size and a recommendation based on how much
+memory the Mac has; choosing one installs Ollama if it's missing, starts the
+server, downloads the weights with progress, and rewrites the config. The
+same thing from a terminal:
 
 ```sh
-brew install ollama && ollama serve
-ollama pull qwen3:8b
+quill models                  # what's available, what's active, what this Mac can run
+quill models --use qwen3:8b   # install + switch (any Ollama tag works, e.g. llama3.1:8b)
+quill models --use apple      # the built-in model — no download at all
+quill models --use none       # transcripts only
 ```
+
+**The weights are not in this repo and never will be** — the 8B is 5.2 GB,
+GitHub caps files at 100 MB, and redistribution terms differ per model. What
+ships is the recipe. If you want zero downloads, `apple` uses the model that
+comes with macOS 26.
+
+| option | download | wants | notes quality |
+|---|---|---|---|
+| `none` | — | — | off |
+| `apple` | none (in macOS 26) | — | fair; small context, long meetings chunked |
+| `qwen3:4b` | 2.6 GB | 8 GB RAM | good |
+| `qwen3:8b` | 5.2 GB | 16 GB RAM | **recommended** — reads a whole meeting at once |
+| `qwen3:14b` | 9.3 GB | 32 GB RAM | sharper, slower |
+| `qwen3:30b-a3b` | 18.6 GB | 48 GB RAM | best here |
+
+`quill doctor` reports which model would actually be used, and `quill notes`
+writes notes for recordings you already have.
 
 ## Meetings in the menu
 
