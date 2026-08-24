@@ -284,6 +284,7 @@ enum Config {
         "com.hnc.Discord",
         "com.google.Chrome",
         "org.mozilla.firefox",
+        "app.zen-browser.zen",  // Zen (Firefox fork, own bundle ID)
         "com.microsoft.edgemac",
         "company.thebrowser.Browser",  // Arc
         "com.brave.Browser",
